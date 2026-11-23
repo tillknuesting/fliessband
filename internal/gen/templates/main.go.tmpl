@@ -1,0 +1,106 @@
+// Command server runs the {{.FullServiceName}} gRPC service.
+package main
+
+import (
+	"context"
+	"fmt"
+	"log/slog"
+	"net"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
+
+	"{{.Module}}/internal/config"
+	"{{.Module}}/internal/server"
+	"{{.Module}}/internal/service"
+	"{{.Module}}/internal/store"
+	"{{.Module}}/internal/telemetry"
+)
+
+func main() {
+	if err := run(); err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+}
+
+func run() error {
+	cfg, err := config.Load()
+	if err != nil {
+		return err
+	}
+	log := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: cfg.LogLevel})).With("service", "{{.Name}}")
+	slog.SetDefault(log)
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+{{if .OTel}}
+	shutdownTelemetry, err := telemetry.Setup(ctx, "{{.Name}}")
+	if err != nil {
+		return fmt.Errorf("telemetry: %w", err)
+	}
+	defer func() {
+		if err := shutdownTelemetry(context.Background()); err != nil {
+			log.Error("telemetry shutdown", "err", err)
+		}
+	}()
+{{end}}
+	st, closeStore, err := openStore(ctx, cfg, log)
+	if err != nil {
+		return err
+	}
+	defer closeStore()
+
+	opts := server.Options{RequestTimeout: cfg.RequestTimeout, MaxInFlight: cfg.MaxInFlight, MaxConnectionAge: cfg.MaxConnectionAge}
+	if cfg.TLSCertFile != "" {
+		if opts.TLS, err = server.TLSConfig(cfg.TLSCertFile, cfg.TLSKeyFile, cfg.TLSClientCAFile); err != nil {
+			return fmt.Errorf("tls: %w", err)
+		}
+	}
+	lis, err := net.Listen("tcp", cfg.Addr)
+	if err != nil {
+		return fmt.Errorf("listen %s: %w", cfg.Addr, err)
+	}
+	srv := server.New(log, service.New(st, log), opts)
+{{- if .Health}}
+	go srv.WatchStore(ctx, st.Ping, 5*time.Second)
+{{- end}}
+
+	errc := make(chan error, 1)
+	go func() {
+		log.Info("listening", "addr", lis.Addr().String(), "tls", opts.TLS != nil)
+		errc <- srv.Serve(lis)
+	}()
+
+	select {
+	case err := <-errc:
+		return fmt.Errorf("serve: %w", err)
+	case <-ctx.Done():
+	}
+	log.Info("shutting down", "drain", cfg.DrainDelay.String(), "timeout", cfg.ShutdownTimeout.String())
+	srv.Shutdown(cfg.DrainDelay, cfg.ShutdownTimeout)
+	log.Info("stopped")
+	return nil
+}
+
+// openStore returns the PostgreSQL store when DATABASE_URL is set and the
+// in-memory store otherwise, with a function that releases it.
+func openStore(ctx context.Context, cfg config.Config, log *slog.Logger) (store.Store, func(), error) {
+{{- if .Postgres}}
+	if cfg.DatabaseURL != "" {
+		connectCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		defer cancel()
+		pg, err := store.OpenPostgres(connectCtx, cfg.DatabaseURL)
+		if err != nil {
+			return nil, nil, fmt.Errorf("postgres: %w", err)
+		}
+		log.Info("store ready", "kind", "postgres")
+		return pg, pg.Close, nil
+	}
+	log.Warn("DATABASE_URL is not set: using the in-memory store, which loses data on restart")
+{{- else}}
+	log.Info("store ready", "kind", "memory")
+{{- end}}
+	return store.NewMemory(), func() {}, nil
+}

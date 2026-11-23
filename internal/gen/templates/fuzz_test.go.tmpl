@@ -1,0 +1,63 @@
+package service
+
+import (
+	"testing"
+
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+
+	pb "{{.GoPkgPath}}"
+)
+
+// Fuzz targets state properties that must hold for any input. go test runs
+// their seed corpus; the factory's fuzz stage also explores new inputs, and
+// so does "go test -fuzz=FuzzName".
+{{- if .AnyList}}
+
+// FuzzPageToken: decoding never panics, rejects every token it did not
+// issue, and round-trips every token it did.
+func FuzzPageToken(f *testing.F) {
+	f.Add(encodePageToken("0190a6b4-6d1c-7c3e-9f00-1234567890ab"))
+	f.Add("")
+	f.Add("!!")
+	f.Add("aw")
+	f.Add("a\r00") // found by fuzzing: the base64 decoder skips line breaks
+	f.Fuzz(func(t *testing.T, token string) {
+		after, err := decodePageToken(token)
+		if err != nil {
+			return
+		}
+		if again := encodePageToken(after); again != token {
+			t.Fatalf("token %q decodes to %q, which encodes to %q", token, after, again)
+		}
+	})
+}
+{{- end}}
+{{- range .Entities}}{{if or .HasCreate .HasUpdate}}{{$e := .}}
+
+// FuzzValidate{{.Name}}: validation never panics and either accepts the
+// {{.Lower}} or returns InvalidArgument with at least one field violation.
+func FuzzValidate{{.Name}}(f *testing.F) {
+	f.Add("", int64(0))
+	f.Add("x", int64(-1))
+	f.Add("\xff\xfe", int64(1<<40))
+	f.Fuzz(func(t *testing.T, s string, n int64) {
+		m := valid{{.Name}}(0)
+{{- range .Fields}}{{if not .Repeated}}{{if eq .Type "string"}}
+		m.{{.GoName}} = s
+{{- else if eq .Type "int32"}}
+		m.{{.GoName}} = int32(n)
+{{- else if eq .Type "int64"}}
+		m.{{.GoName}} = n
+{{- end}}{{end}}{{end}}
+		err := validate{{.Name}}(m, "{{.Snake}}.")
+		if err == nil {
+			return
+		}
+		st, _ := status.FromError(err)
+		if st.Code() != codes.InvalidArgument || len(st.Details()) == 0 {
+			t.Fatalf("validate{{.Name}} returned %v, want InvalidArgument with field violations", err)
+		}
+	})
+}
+{{- end}}{{end}}

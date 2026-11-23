@@ -1,0 +1,294 @@
+package store
+
+import (
+	"context"
+	"embed"
+	"errors"
+	"fmt"
+	"io/fs"
+	"math"
+	"slices"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgxpool"
+	"google.golang.org/protobuf/types/known/timestamppb"
+
+	pb "{{.GoPkgPath}}"
+)
+
+//go:embed migrations/*.sql
+var migrations embed.FS
+
+// Postgres is a Store backed by PostgreSQL through a pgx connection pool.
+type Postgres struct {
+	pool *pgxpool.Pool
+}
+
+var _ Store = (*Postgres)(nil)
+
+// OpenPostgres connects to the database at url, checks the connection and
+// applies pending migrations. Pool settings can be tuned in the URL, for
+// example ?pool_max_conns=20.
+func OpenPostgres(ctx context.Context, url string) (*Postgres, error) {
+	cfg, err := pgxpool.ParseConfig(url)
+	if err != nil {
+		return nil, fmt.Errorf("parse database URL: %w", err)
+	}
+	return openPostgres(ctx, cfg)
+}
+
+func openPostgres(ctx context.Context, cfg *pgxpool.Config) (*Postgres, error) {
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
+	if err != nil {
+		return nil, err
+	}
+	if err := pool.Ping(ctx); err != nil {
+		pool.Close()
+		return nil, fmt.Errorf("connect: %w", err)
+	}
+	p := &Postgres{pool: pool}
+	if err := p.migrate(ctx); err != nil {
+		pool.Close()
+		return nil, fmt.Errorf("migrate: %w", err)
+	}
+	return p, nil
+}
+
+// Close releases the connection pool.
+func (p *Postgres) Close() { p.pool.Close() }
+
+// Ping implements Store.
+func (p *Postgres) Ping(ctx context.Context) error { return p.pool.Ping(ctx) }
+
+// migrate applies the embedded migrations that have not run yet, in file
+// name order and in one transaction. An advisory lock serialises instances
+// that start at the same time.
+func (p *Postgres) migrate(ctx context.Context) error {
+	names, err := fs.Glob(migrations, "migrations/*.sql")
+	if err != nil {
+		return err
+	}
+	slices.Sort(names)
+	return pgx.BeginFunc(ctx, p.pool, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock({{.LockKey}})"); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `CREATE TABLE IF NOT EXISTS schema_migrations (
+	version text PRIMARY KEY,
+	applied_at timestamptz NOT NULL DEFAULT now()
+)`); err != nil {
+			return err
+		}
+		for _, name := range names {
+			if err := applyMigration(ctx, tx, name); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+// applyMigration runs one migration file unless it ran before.
+func applyMigration(ctx context.Context, tx pgx.Tx, name string) error {
+	var done bool
+	if err := tx.QueryRow(ctx, "SELECT EXISTS (SELECT 1 FROM schema_migrations WHERE version = $1)", name).Scan(&done); err != nil || done {
+		return err
+	}
+	sql, err := migrations.ReadFile(name)
+	if err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, string(sql)); err != nil {
+		return fmt.Errorf("%s: %w", name, err)
+	}
+	_, err = tx.Exec(ctx, "INSERT INTO schema_migrations (version) VALUES ($1)", name)
+	return err
+}
+{{range .Entities}}{{$e := .}}
+const {{.Var}}Columns = `{{.SQLColumns}}`
+
+func scan{{.Name}}(row pgx.Row) (*pb.{{.Name}}, error) {
+	var (
+		id                     string
+{{- range .Fields}}
+		c{{.GoName}} {{.Col.ScanVar}}
+{{- end}}
+		createTime, updateTime time.Time
+	)
+	if err := row.Scan(&id{{range .Fields}}, &c{{.GoName}}{{end}}, &createTime, &updateTime); err != nil {
+		return nil, err
+	}
+	x := &pb.{{.Name}}{Id: id, CreateTime: timestamppb.New(createTime), UpdateTime: timestamppb.New(updateTime)}
+{{- range .Fields}}
+	{{.Col.Assign}}
+{{- end}}
+	return x, nil
+}
+
+// {{.Var}}Args returns the query arguments for {{.Var}}Columns.
+func {{.Var}}Args(x *pb.{{.Name}}) []any {
+	return []any{x.GetId(){{range .Fields}}, {{.Col.Arg}}{{end}}, timeOrNil(x.GetCreateTime()), timeOrNil(x.GetUpdateTime())}
+}
+
+// {{.Var}}Error maps database errors on {{.PluralLower}} to store errors.
+func {{.Var}}Error(err error, x *pb.{{.Name}}) error {
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == "23505" { // unique_violation
+{{- if .UniqueIndexes}}
+		switch pgErr.ConstraintName {
+{{- range .UniqueIndexes}}
+		case "{{.Name}}":
+			return fmt.Errorf("{{$e.Lower}} with {{.Field.Name}} %q: %w", x.Get{{.Field.GoName}}(), ErrAlreadyExists)
+{{- end}}
+		}
+{{- end}}
+		return fmt.Errorf("{{.Lower}} %q: %w", x.GetId(), ErrAlreadyExists)
+	}
+	return err
+}
+
+// Create{{.Name}} implements {{.Name}}Repository.
+func (p *Postgres) Create{{.Name}}(ctx context.Context, x *pb.{{.Name}}) (*pb.{{.Name}}, error) {
+	row := p.pool.QueryRow(ctx, `INSERT INTO {{.Table}} (`+{{.Var}}Columns+`) VALUES ({{.SQLPlaceholders}}) RETURNING `+{{.Var}}Columns, {{.Var}}Args(x)...)
+	created, err := scan{{.Name}}(row)
+	if err != nil {
+		return nil, {{.Var}}Error(err, x)
+	}
+	return created, nil
+}
+
+// Get{{.Name}} implements {{.Name}}Repository.
+func (p *Postgres) Get{{.Name}}(ctx context.Context, id string) (*pb.{{.Name}}, error) {
+	x, err := scan{{.Name}}(p.pool.QueryRow(ctx, `SELECT `+{{.Var}}Columns+` FROM {{.Table}} WHERE "id" = $1`, id))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, fmt.Errorf("{{.Lower}} %q: %w", id, ErrNotFound)
+	}
+	if err != nil {
+		return nil, err
+	}
+	return x, nil
+}
+
+// List{{.Plural}} implements {{.Name}}Repository.
+func (p *Postgres) List{{.Plural}}(ctx context.Context, after string, limit int) ([]*pb.{{.Name}}, error) {
+	rows, err := p.pool.Query(ctx, `SELECT `+{{.Var}}Columns+` FROM {{.Table}} WHERE "id" > $1 ORDER BY "id" LIMIT $2`, after, max(limit, 0))
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, func(row pgx.CollectableRow) (*pb.{{.Name}}, error) { return scan{{.Name}}(row) })
+}
+
+// Update{{.Name}} implements {{.Name}}Repository. The row stays locked while
+// mutate runs, so concurrent updates of one {{.Lower}} cannot lose writes.
+func (p *Postgres) Update{{.Name}}(ctx context.Context, id string, mutate func(*pb.{{.Name}}) error) (*pb.{{.Name}}, error) {
+	var out *pb.{{.Name}}
+	err := pgx.BeginFunc(ctx, p.pool, func(tx pgx.Tx) error {
+		cur, err := scan{{.Name}}(tx.QueryRow(ctx, `SELECT `+{{.Var}}Columns+` FROM {{.Table}} WHERE "id" = $1 FOR UPDATE`, id))
+		if errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("{{.Lower}} %q: %w", id, ErrNotFound)
+		}
+		if err != nil {
+			return err
+		}
+		if err := mutate(cur); err != nil {
+			return err
+		}
+		cur.Id = id
+		row := tx.QueryRow(ctx, `UPDATE {{.Table}} SET {{.SQLSets}} WHERE "id" = $1 RETURNING `+{{.Var}}Columns, {{.Var}}Args(cur)...)
+		if out, err = scan{{.Name}}(row); err != nil {
+			return {{.Var}}Error(err, cur)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// Delete{{.Name}} implements {{.Name}}Repository.
+func (p *Postgres) Delete{{.Name}}(ctx context.Context, id string) error {
+	tag, err := p.pool.Exec(ctx, `DELETE FROM {{.Table}} WHERE "id" = $1`, id)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("{{.Lower}} %q: %w", id, ErrNotFound)
+	}
+	return nil
+}
+{{end}}
+// timeOrNil converts a proto timestamp into a nullable query argument.
+func timeOrNil(ts *timestamppb.Timestamp) *time.Time {
+	if ts == nil {
+		return nil
+	}
+	t := ts.AsTime()
+	return &t
+}
+
+{{- if index .PGHelpers "time"}}
+
+// timeToProto converts a nullable column back into a proto timestamp.
+func timeToProto(t *time.Time) *timestamppb.Timestamp {
+	if t == nil {
+		return nil
+	}
+	return timestamppb.New(*t)
+}
+{{- end}}
+{{- if index .PGHelpers "orEmpty"}}
+
+// orEmpty turns nil into an empty slice: NOT NULL array and bytea columns
+// reject the NULL that pgx sends for a nil slice.
+func orEmpty[T any](s []T) []T {
+	if s == nil {
+		return []T{}
+	}
+	return s
+}
+{{- end}}
+{{- if index .PGHelpers "times"}}
+
+func timesFromProto(ts []*timestamppb.Timestamp) []time.Time {
+	out := make([]time.Time, len(ts))
+	for i, t := range ts {
+		out[i] = t.AsTime()
+	}
+	return out
+}
+
+func timesToProto(ts []time.Time) []*timestamppb.Timestamp {
+	if len(ts) == 0 {
+		return nil
+	}
+	out := make([]*timestamppb.Timestamp, len(ts))
+	for i, t := range ts {
+		out[i] = timestamppb.New(t)
+	}
+	return out
+}
+{{- end}}
+{{- if index .PGHelpers "uint32s"}}
+
+func uint32sToInt64s(v []uint32) []int64 {
+	out := make([]int64, len(v))
+	for i, x := range v {
+		out[i] = int64(x)
+	}
+	return out
+}
+
+func int64sToUint32s(v []int64) []uint32 {
+	if len(v) == 0 {
+		return nil
+	}
+	out := make([]uint32, len(v))
+	for i, x := range v {
+		out[i] = uint32(min(max(x, 0), math.MaxUint32))
+	}
+	return out
+}
+{{- end}}

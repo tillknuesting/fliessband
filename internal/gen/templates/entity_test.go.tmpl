@@ -1,0 +1,216 @@
+package service
+
+import (
+	"fmt"
+	"strings"
+	"testing"
+	"time"
+
+	"google.golang.org/grpc/codes"
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/fieldmaskpb"
+	"google.golang.org/protobuf/types/known/timestamppb"
+
+	pb "{{.GoPkgPath}}"
+	"{{.Module}}/internal/store"
+)
+{{with .E}}{{$e := .}}
+// valid{{.Name}} returns a {{.Lower}} that passes validation; i varies unique fields.
+func valid{{.Name}}(i int) *pb.{{.Name}} {
+	return &pb.{{.Name}}{
+{{- range .Fields}}
+		{{.GoName}}: {{.ValidExpr}},
+{{- end}}
+	}
+}
+
+// seed{{.Name}} stores valid{{.Name}}(i) and returns the stored copy.
+func seed{{.Name}}(t *testing.T, c pb.{{$.ServiceName}}Client, st *store.Memory, i int) *pb.{{.Name}} {
+	t.Helper()
+{{- if .HasCreate}}
+	resp, err := c.Create{{.Name}}(t.Context(), &pb.Create{{.Name}}Request{ {{.GoField}}: valid{{.Name}}(i)})
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	return resp.Get{{.GoField}}()
+{{- else}}
+	x := valid{{.Name}}(i)
+	x.Id = fmt.Sprintf("seed-%d", i)
+	x.CreateTime = timestamppb.New(time.Now())
+	x.UpdateTime = x.CreateTime
+	created, err := st.Create{{.Name}}(t.Context(), x)
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	return created
+{{- end}}
+}
+
+func Test{{.Name}}Lifecycle(t *testing.T) {
+	c, st := newClient(t)
+	x := seed{{.Name}}(t, c, st, 0)
+	if x.GetId() == "" || x.GetCreateTime() == nil || x.GetUpdateTime() == nil {
+		t.Fatalf("server-set fields missing: %v", x)
+	}
+{{- if .HasGet}}
+
+	t.Run("get", func(t *testing.T) {
+		got, err := c.Get{{.Name}}(t.Context(), &pb.Get{{.Name}}Request{Id: x.GetId()})
+		if err != nil {
+			t.Fatalf("get: %v", err)
+		}
+		if !proto.Equal(got.Get{{.GoField}}(), x) {
+			t.Fatalf("get = %v, want %v", got.Get{{.GoField}}(), x)
+		}
+		_, err = c.Get{{.Name}}(t.Context(), &pb.Get{{.Name}}Request{Id: "missing"})
+		wantCode(t, err, codes.NotFound)
+		_, err = c.Get{{.Name}}(t.Context(), &pb.Get{{.Name}}Request{})
+		wantCode(t, err, codes.InvalidArgument)
+	})
+{{- end}}
+{{- if and .HasUpdate .Update}}
+
+	t.Run("update", func(t *testing.T) {
+		upd, err := c.Update{{.Name}}(t.Context(), &pb.Update{{.Name}}Request{
+			{{.GoField}}:  &pb.{{.Name}}{Id: x.GetId(), {{.Update.Field.GoName}}: {{.Update.Expr}}},
+			UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"{{.Update.Field.Name}}"}},
+		})
+		if err != nil {
+			t.Fatalf("update: %v", err)
+		}
+{{- if .Update.Equals}}
+		if got := upd.Get{{.GoField}}().Get{{.Update.Field.GoName}}(); got != {{.Update.Expr}} {
+			t.Fatalf("{{.Update.Field.Name}} = %v after update, want %v", got, {{.Update.Expr}})
+		}
+{{- else}}
+		if upd.Get{{.GoField}}().GetId() != x.GetId() {
+			t.Fatalf("update returned id %q, want %q", upd.Get{{.GoField}}().GetId(), x.GetId())
+		}
+{{- end}}
+		full := valid{{.Name}}(0)
+		full.Id = x.GetId()
+		if _, err := c.Update{{.Name}}(t.Context(), &pb.Update{{.Name}}Request{ {{.GoField}}: full}); err != nil {
+			t.Fatalf("update with empty mask: %v", err)
+		}
+		_, err = c.Update{{.Name}}(t.Context(), &pb.Update{{.Name}}Request{
+			{{.GoField}}:  &pb.{{.Name}}{Id: x.GetId()},
+			UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"id"}},
+		})
+		wantCode(t, err, codes.InvalidArgument)
+		_, err = c.Update{{.Name}}(t.Context(), &pb.Update{{.Name}}Request{ {{.GoField}}: &pb.{{.Name}}{Id: "missing"}})
+		wantCode(t, err, codes.NotFound)
+		_, err = c.Update{{.Name}}(t.Context(), &pb.Update{{.Name}}Request{})
+		wantCode(t, err, codes.InvalidArgument)
+	})
+{{- end}}
+{{- if .HasDelete}}
+
+	t.Run("delete", func(t *testing.T) {
+		if _, err := c.Delete{{.Name}}(t.Context(), &pb.Delete{{.Name}}Request{Id: x.GetId()}); err != nil {
+			t.Fatalf("delete: %v", err)
+		}
+		_, err := c.Delete{{.Name}}(t.Context(), &pb.Delete{{.Name}}Request{Id: x.GetId()})
+		wantCode(t, err, codes.NotFound)
+		_, err = c.Delete{{.Name}}(t.Context(), &pb.Delete{{.Name}}Request{})
+		wantCode(t, err, codes.InvalidArgument)
+	})
+{{- end}}
+}
+{{- if .HasCreate}}
+
+func Test{{.Name}}Validation(t *testing.T) {
+	c, _ := newClient(t)
+	tests := []struct {
+		name   string
+		mutate func(*pb.{{.Name}})
+		field  string
+	}{
+{{- range .Invalid}}
+		{ {{- printf "%q" .Name}}, func(x *pb.{{$e.Name}}) { x.{{.GoName}} = {{.Expr}} }, {{printf "%q" .Field -}} },
+{{- end}}
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			x := valid{{.Name}}(0)
+			tt.mutate(x)
+			_, err := c.Create{{.Name}}(t.Context(), &pb.Create{{.Name}}Request{ {{.GoField}}: x})
+			wantViolation(t, err, "{{.Snake}}."+tt.field)
+		})
+	}
+	_, err := c.Create{{.Name}}(t.Context(), &pb.Create{{.Name}}Request{})
+	wantCode(t, err, codes.InvalidArgument)
+}
+{{- if .Boundary}}
+
+// Test{{.Name}}Boundaries checks that values exactly at each limit are
+// accepted: off-by-one mistakes in the rules show up here.
+func Test{{.Name}}Boundaries(t *testing.T) {
+	c, _ := newClient(t)
+	tests := []struct {
+		name   string
+		mutate func(*pb.{{.Name}})
+	}{
+{{- range .Boundary}}
+		{ {{- printf "%q" .Name}}, func(x *pb.{{$e.Name}}) { x.{{.GoName}} = {{.Expr}} } },
+{{- end}}
+	}
+	for i, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			x := valid{{.Name}}(i + 1)
+			tt.mutate(x)
+			if _, err := c.Create{{.Name}}(t.Context(), &pb.Create{{.Name}}Request{ {{.GoField}}: x}); err != nil {
+				t.Fatalf("a value at the limit was rejected: %v", err)
+			}
+		})
+	}
+}
+{{- end}}
+{{- end}}
+{{- if and .HasCreate .Unique}}
+
+func Test{{.Name}}Unique(t *testing.T) {
+	c, st := newClient(t)
+	seed{{.Name}}(t, c, st, 0)
+	_, err := c.Create{{.Name}}(t.Context(), &pb.Create{{.Name}}Request{ {{.GoField}}: valid{{.Name}}(0)})
+	wantCode(t, err, codes.AlreadyExists)
+}
+{{- end}}
+{{- if .HasList}}
+
+func Test{{.Name}}Pagination(t *testing.T) {
+	c, st := newClient(t)
+	const n = 5
+	for i := range n {
+		seed{{.Name}}(t, c, st, i)
+	}
+	seen, token := 0, ""
+	for page := 0; ; page++ {
+		resp, err := c.List{{.Plural}}(t.Context(), &pb.List{{.Plural}}Request{PageSize: 2, PageToken: token})
+		if err != nil {
+			t.Fatalf("list page %d: %v", page, err)
+		}
+		if got := len(resp.Get{{.GoPluralField}}()); got > 2 || (page == 0 && got != 2) {
+			t.Fatalf("page %d has %d {{.PluralLower}}, want 2 per page", page, got)
+		}
+		seen += len(resp.Get{{.GoPluralField}}())
+		if token = resp.GetNextPageToken(); token == "" {
+			break
+		}
+		if page > n {
+			t.Fatal("pagination does not terminate")
+		}
+	}
+	if seen != n {
+		t.Fatalf("listed %d {{.PluralLower}}, want %d", seen, n)
+	}
+	all, err := c.List{{.Plural}}(t.Context(), &pb.List{{.Plural}}Request{})
+	if err != nil || len(all.Get{{.GoPluralField}}()) != n || all.GetNextPageToken() != "" {
+		t.Fatalf("page_size 0 must use the default page size: %d {{.PluralLower}}, token %q, %v", len(all.Get{{.GoPluralField}}()), all.GetNextPageToken(), err)
+	}
+	_, err = c.List{{.Plural}}(t.Context(), &pb.List{{.Plural}}Request{PageSize: -1})
+	wantViolation(t, err, "page_size")
+	_, err = c.List{{.Plural}}(t.Context(), &pb.List{{.Plural}}Request{PageToken: "!!"})
+	wantViolation(t, err, "page_token")
+}
+{{- end}}
+{{end}}

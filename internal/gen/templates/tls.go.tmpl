@@ -1,0 +1,65 @@
+package server
+
+import (
+	"crypto/tls"
+	"crypto/x509"
+	"errors"
+	"fmt"
+	"os"
+	"sync"
+	"time"
+)
+
+// TLSConfig returns a TLS 1.3 configuration that reloads the key pair when
+// the certificate file changes, so certificates rotated by cert-manager or
+// similar apply without a restart. With caFile set, clients must present a
+// certificate signed by that CA (mutual TLS). Go negotiates the hybrid
+// post-quantum key exchange X25519MLKEM768 by default.
+func TLSConfig(certFile, keyFile, caFile string) (*tls.Config, error) {
+	r := &certReloader{certFile: certFile, keyFile: keyFile}
+	if _, err := r.get(nil); err != nil {
+		return nil, err
+	}
+	cfg := &tls.Config{MinVersion: tls.VersionTLS13, GetCertificate: r.get}
+	if caFile != "" {
+		pem, err := os.ReadFile(caFile) //nolint:gosec // G304: the path is operator configuration
+		if err != nil {
+			return nil, fmt.Errorf("client CA: %w", err)
+		}
+		pool := x509.NewCertPool()
+		if !pool.AppendCertsFromPEM(pem) {
+			return nil, errors.New("client CA: no PEM certificates in " + caFile)
+		}
+		cfg.ClientCAs = pool
+		cfg.ClientAuth = tls.RequireAndVerifyClientCert
+	}
+	return cfg, nil
+}
+
+// certReloader serves the key pair from disk, reloading it when the
+// certificate file's modification time changes. If a reload fails, it keeps
+// serving the previous pair.
+type certReloader struct {
+	certFile, keyFile string
+
+	mu      sync.Mutex
+	modTime time.Time
+	cert    *tls.Certificate
+}
+
+func (r *certReloader) get(*tls.ClientHelloInfo) (*tls.Certificate, error) {
+	info, statErr := os.Stat(r.certFile)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if statErr == nil && r.cert != nil && info.ModTime().Equal(r.modTime) {
+		return r.cert, nil
+	}
+	cert, err := tls.LoadX509KeyPair(r.certFile, r.keyFile)
+	switch {
+	case err == nil && statErr == nil:
+		r.cert, r.modTime = &cert, info.ModTime()
+	case r.cert == nil:
+		return nil, fmt.Errorf("load key pair: %w", errors.Join(statErr, err))
+	}
+	return r.cert, nil
+}

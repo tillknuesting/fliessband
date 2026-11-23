@@ -1,0 +1,102 @@
+package server
+
+import (
+	"context"
+	"fmt"
+	"log/slog"
+	"runtime/debug"
+	"time"
+
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+)
+
+// Recovery turns a panic in a handler into an Internal error and logs the stack.
+func Recovery(log *slog.Logger) grpc.UnaryServerInterceptor {
+	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (resp any, err error) {
+		defer func() {
+			if r := recover(); r != nil {
+				log.ErrorContext(ctx, "panic in handler", "method", info.FullMethod, "panic", fmt.Sprint(r), "stack", string(debug.Stack()))
+				err = status.Error(codes.Internal, "internal error")
+			}
+		}()
+		return handler(ctx, req)
+	}
+}
+
+// StreamRecovery is Recovery for streaming RPCs (reflection uses streams).
+func StreamRecovery(log *slog.Logger) grpc.StreamServerInterceptor {
+	return func(srv any, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) (err error) {
+		defer func() {
+			if r := recover(); r != nil {
+				log.ErrorContext(ss.Context(), "panic in stream", "method", info.FullMethod, "panic", fmt.Sprint(r), "stack", string(debug.Stack()))
+				err = status.Error(codes.Internal, "internal error")
+			}
+		}()
+		return handler(srv, ss)
+	}
+}
+
+// Logging writes one structured line per call with the method, code and duration.
+func Logging(log *slog.Logger) grpc.UnaryServerInterceptor {
+	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
+		start := time.Now()
+		resp, err := handler(ctx, req)
+		code := status.Code(err)
+		log.Log(ctx, levelFor(code), "rpc",
+			"method", info.FullMethod,
+			"code", code.String(),
+			"duration_ms", float64(time.Since(start).Microseconds())/1000,
+		)
+		return resp, err
+	}
+}
+
+// levelFor logs client errors as warnings and server errors as errors.
+func levelFor(code codes.Code) slog.Level {
+	switch code {
+	case codes.OK:
+		return slog.LevelInfo
+	case codes.Canceled, codes.InvalidArgument, codes.NotFound, codes.AlreadyExists,
+		codes.PermissionDenied, codes.FailedPrecondition, codes.OutOfRange, codes.Unauthenticated:
+		return slog.LevelWarn
+	default:
+		return slog.LevelError
+	}
+}
+
+// Deadline gives calls that arrive without a deadline a default one, so a
+// stuck dependency cannot hold a handler and its resources forever. A
+// deadline set by the client is kept.
+func Deadline(d time.Duration) grpc.UnaryServerInterceptor {
+	return func(ctx context.Context, req any, _ *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
+		if _, ok := ctx.Deadline(); !ok && d > 0 {
+			var cancel context.CancelFunc
+			ctx, cancel = context.WithTimeout(ctx, d)
+			defer cancel()
+		}
+		return handler(ctx, req)
+	}
+}
+
+// Limit sheds load: when max calls are already running, new calls fail
+// fast with RESOURCE_EXHAUSTED instead of queueing until they time out.
+// Clients should retry those with backoff. max <= 0 disables the limit.
+func Limit(max int) grpc.UnaryServerInterceptor {
+	if max <= 0 {
+		return func(ctx context.Context, req any, _ *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
+			return handler(ctx, req)
+		}
+	}
+	slots := make(chan struct{}, max)
+	return func(ctx context.Context, req any, _ *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
+		select {
+		case slots <- struct{}{}:
+			defer func() { <-slots }()
+			return handler(ctx, req)
+		default:
+			return nil, status.Error(codes.ResourceExhausted, "server is at capacity; retry with backoff")
+		}
+	}
+}

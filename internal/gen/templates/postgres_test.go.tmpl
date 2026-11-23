@@ -1,0 +1,73 @@
+package store
+
+import (
+	"context"
+	"crypto/rand"
+	"os"
+	"strings"
+	"testing"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+)
+
+// The PostgreSQL tests run when TEST_DATABASE_URL points at a database, for
+// example postgres://postgres:postgres@localhost:5432/postgres?sslmode=disable.
+// Each test works in its own schema, which is dropped afterwards.
+func testDatabaseURL(t *testing.T) string {
+	url := os.Getenv("TEST_DATABASE_URL")
+	if url == "" {
+		t.Skip("TEST_DATABASE_URL is not set")
+	}
+	return url
+}
+
+func TestPostgres(t *testing.T) {
+	url := testDatabaseURL(t)
+	testStore(t, func(t *testing.T) Store { return newTestPostgres(t, url) })
+}
+
+func TestPostgresMigrationsAreIdempotent(t *testing.T) {
+	url := testDatabaseURL(t)
+	p := newTestPostgres(t, url)
+	if err := p.migrate(t.Context()); err != nil {
+		t.Fatalf("second migration run: %v", err)
+	}
+}
+
+func TestOpenPostgresErrors(t *testing.T) {
+	if _, err := OpenPostgres(t.Context(), "postgres://%zz"); err == nil {
+		t.Fatal("OpenPostgres accepted a malformed URL")
+	}
+}
+
+// newTestPostgres opens a store in a fresh schema of the test database.
+func newTestPostgres(t *testing.T, url string) *Postgres {
+	t.Helper()
+	schema := "test_" + strings.ToLower(rand.Text())
+	admin, err := pgx.Connect(t.Context(), url)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	if _, err := admin.Exec(t.Context(), "CREATE SCHEMA "+schema); err != nil {
+		t.Fatalf("create schema: %v", err)
+	}
+	cfg, err := pgxpool.ParseConfig(url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.ConnConfig.RuntimeParams["search_path"] = schema
+	p, err := openPostgres(t.Context(), cfg)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() {
+		p.Close()
+		ctx := context.Background() // t.Context is already canceled during cleanup
+		if _, err := admin.Exec(ctx, "DROP SCHEMA "+schema+" CASCADE"); err != nil {
+			t.Errorf("drop schema: %v", err)
+		}
+		_ = admin.Close(ctx)
+	})
+	return p
+}

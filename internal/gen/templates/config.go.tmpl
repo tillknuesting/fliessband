@@ -1,0 +1,133 @@
+// Package config loads runtime configuration from environment variables.
+package config
+
+import (
+	"errors"
+	"fmt"
+	"log/slog"
+	"os"
+	"strconv"
+	"time"
+)
+
+// Config is the runtime configuration. Every setting has a production-safe
+// default; see the README for the full list.
+type Config struct {
+	// Addr is the gRPC listen address (GRPC_ADDR, default ":{{.Port}}").
+	Addr string
+	// LogLevel is the minimum log level (LOG_LEVEL: debug, info, warn, error).
+	LogLevel slog.Level
+{{- if .Postgres}}
+	// DatabaseURL selects PostgreSQL (DATABASE_URL). Empty uses the
+	// in-memory store, which loses data on restart.
+	DatabaseURL string
+{{- end}}
+	// TLSCertFile and TLSKeyFile enable TLS (TLS_CERT_FILE, TLS_KEY_FILE).
+	// Rotated files are picked up without a restart.
+	TLSCertFile, TLSKeyFile string
+	// TLSClientCAFile requires client certificates signed by this CA (mTLS).
+	TLSClientCAFile string
+	// RequestTimeout is the deadline for calls that arrive without one
+	// (REQUEST_TIMEOUT, default 30s).
+	RequestTimeout time.Duration
+	// MaxInFlight is how many calls may run at once before new ones are shed
+	// with RESOURCE_EXHAUSTED (MAX_IN_FLIGHT, default 1024, 0 for no limit).
+	MaxInFlight int
+	// MaxConnectionAge recycles client connections so that load balancers
+	// can spread them over new instances (MAX_CONNECTION_AGE, default 5m).
+	MaxConnectionAge time.Duration
+	// DrainDelay is how long to report NOT_SERVING before refusing new
+	// calls on shutdown, so load balancers stop routing first (DRAIN_DELAY).
+	DrainDelay time.Duration
+	// ShutdownTimeout bounds the graceful stop (SHUTDOWN_TIMEOUT, default 10s).
+	ShutdownTimeout time.Duration
+}
+
+// Load reads the configuration from the environment.
+func Load() (Config, error) {
+	return load(os.Getenv)
+}
+
+func load(getenv func(string) string) (Config, error) {
+	cfg := Config{
+		Addr:             ":{{.Port}}",
+		LogLevel:         slog.LevelInfo,
+		RequestTimeout:   30 * time.Second,
+		MaxInFlight:      1024,
+		MaxConnectionAge: 5 * time.Minute,
+		ShutdownTimeout:  10 * time.Second,
+	}
+	p := &parser{getenv: getenv}
+	p.str("GRPC_ADDR", &cfg.Addr)
+	p.level("LOG_LEVEL", &cfg.LogLevel)
+{{- if .Postgres}}
+	p.str("DATABASE_URL", &cfg.DatabaseURL)
+{{- end}}
+	p.str("TLS_CERT_FILE", &cfg.TLSCertFile)
+	p.str("TLS_KEY_FILE", &cfg.TLSKeyFile)
+	p.str("TLS_CLIENT_CA_FILE", &cfg.TLSClientCAFile)
+	p.duration("REQUEST_TIMEOUT", &cfg.RequestTimeout)
+	p.duration("MAX_CONNECTION_AGE", &cfg.MaxConnectionAge)
+	p.duration("DRAIN_DELAY", &cfg.DrainDelay)
+	p.duration("SHUTDOWN_TIMEOUT", &cfg.ShutdownTimeout)
+	p.count("MAX_IN_FLIGHT", &cfg.MaxInFlight)
+	p.require((cfg.TLSCertFile == "") == (cfg.TLSKeyFile == ""), "TLS_CERT_FILE and TLS_KEY_FILE must be set together")
+	p.require(cfg.TLSClientCAFile == "" || cfg.TLSCertFile != "", "TLS_CLIENT_CA_FILE needs TLS_CERT_FILE and TLS_KEY_FILE")
+	if err := errors.Join(p.errs...); err != nil {
+		return Config{}, err
+	}
+	return cfg, nil
+}
+
+// parser reads typed settings and collects every error, so that a broken
+// deployment reports all of its mistakes at once.
+type parser struct {
+	getenv func(string) string
+	errs   []error
+}
+
+func (p *parser) str(key string, dst *string) {
+	if v := p.getenv(key); v != "" {
+		*dst = v
+	}
+}
+
+func (p *parser) level(key string, dst *slog.Level) {
+	if v := p.getenv(key); v != "" {
+		if err := dst.UnmarshalText([]byte(v)); err != nil {
+			p.errs = append(p.errs, fmt.Errorf("%s: %w", key, err))
+		}
+	}
+}
+
+func (p *parser) duration(key string, dst *time.Duration) {
+	v := p.getenv(key)
+	if v == "" {
+		return
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil || d < 0 {
+		p.errs = append(p.errs, fmt.Errorf("%s: want a duration such as 30s, got %q", key, v))
+		return
+	}
+	*dst = d
+}
+
+func (p *parser) count(key string, dst *int) {
+	v := p.getenv(key)
+	if v == "" {
+		return
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n < 0 {
+		p.errs = append(p.errs, fmt.Errorf("%s: want a whole number, got %q", key, v))
+		return
+	}
+	*dst = n
+}
+
+func (p *parser) require(ok bool, msg string) {
+	if !ok {
+		p.errs = append(p.errs, errors.New(msg))
+	}
+}

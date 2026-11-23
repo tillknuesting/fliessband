@@ -1,0 +1,45 @@
+// Package store defines persistence for the service, with an in-memory
+// implementation for development and tests{{if .Postgres}} and a PostgreSQL implementation
+// for production{{end}}.
+package store
+
+import (
+	"context"
+	"errors"
+
+	pb "{{.GoPkgPath}}"
+)
+
+var (
+	// ErrNotFound is returned when a record does not exist.
+	ErrNotFound = errors.New("not found")
+	// ErrAlreadyExists is returned when an id or unique field is already taken.
+	ErrAlreadyExists = errors.New("already exists")
+)
+
+// Store is the persistence interface used by the service layer.
+type Store interface {
+{{- range .Entities}}
+	{{.Name}}Repository
+{{- end}}
+	// Ping reports whether the store can serve requests; readiness checks use it.
+	Ping(ctx context.Context) error
+}
+{{range .Entities}}
+// {{.Name}}Repository persists {{.PluralLower}}.
+type {{.Name}}Repository interface {
+	// Create{{.Name}} stores a new {{.Lower}}. It returns ErrAlreadyExists if the id or a unique field is taken.
+	Create{{.Name}}(ctx context.Context, {{.Var}} *pb.{{.Name}}) (*pb.{{.Name}}, error)
+	// Get{{.Name}} returns the {{.Lower}} with the given id, or ErrNotFound.
+	Get{{.Name}}(ctx context.Context, id string) (*pb.{{.Name}}, error)
+	// List{{.Plural}} returns up to limit {{.PluralLower}} whose id sorts after the given
+	// id ("" starts at the beginning), in id order. Ids are UUIDv7, so id order
+	// is creation order, and paging stays stable while records are added or removed.
+	List{{.Plural}}(ctx context.Context, after string, limit int) ([]*pb.{{.Name}}, error)
+	// Update{{.Name}} applies mutate to a copy of the stored {{.Lower}} and saves it atomically.
+	// If mutate returns an error nothing is saved. mutate must not call the store.
+	Update{{.Name}}(ctx context.Context, id string, mutate func(*pb.{{.Name}}) error) (*pb.{{.Name}}, error)
+	// Delete{{.Name}} removes the {{.Lower}}, or returns ErrNotFound.
+	Delete{{.Name}}(ctx context.Context, id string) error
+}
+{{end}}

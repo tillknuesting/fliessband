@@ -1,0 +1,4 @@
+.tools/
+web/ui/node_modules/
+data/
+.claude/

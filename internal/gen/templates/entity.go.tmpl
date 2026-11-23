@@ -1,0 +1,136 @@
+package service
+
+import (
+	"context"
+	"regexp"
+	"unicode/utf8"
+
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/timestamppb"
+
+	pb "{{.GoPkgPath}}"
+)
+{{with .E}}
+{{- if .Patterns}}
+var (
+{{- range .Patterns}}
+	{{.Var}} = regexp.MustCompile({{.Literal}})
+{{- end}}
+)
+{{end}}
+{{- if .HasCreate}}
+// Create{{.Name}} implements {{$.ServiceName}}.Create{{.Name}}.
+func (s *Server) Create{{.Name}}(ctx context.Context, req *pb.Create{{.Name}}Request) (*pb.Create{{.Name}}Response, error) {
+	in := req.Get{{.GoField}}()
+	if in == nil {
+		return nil, status.Error(codes.InvalidArgument, "{{.Snake}}: is required")
+	}
+	if err := validate{{.Name}}(in, "{{.Snake}}."); err != nil {
+		return nil, err
+	}
+	{{.Var}} := proto.Clone(in).(*pb.{{.Name}})
+	now := timestamppb.New(s.now())
+	{{.Var}}.Id = newID()
+	{{.Var}}.CreateTime = now
+	{{.Var}}.UpdateTime = now
+	created, err := s.store.Create{{.Name}}(ctx, {{.Var}})
+	if err != nil {
+		return nil, s.toStatus(ctx, err)
+	}
+	return &pb.Create{{.Name}}Response{ {{.GoField}}: created}, nil
+}
+{{end}}
+{{- if .HasGet}}
+// Get{{.Name}} implements {{$.ServiceName}}.Get{{.Name}}.
+func (s *Server) Get{{.Name}}(ctx context.Context, req *pb.Get{{.Name}}Request) (*pb.Get{{.Name}}Response, error) {
+	if req.GetId() == "" {
+		return nil, status.Error(codes.InvalidArgument, "id: is required")
+	}
+	{{.Var}}, err := s.store.Get{{.Name}}(ctx, req.GetId())
+	if err != nil {
+		return nil, s.toStatus(ctx, err)
+	}
+	return &pb.Get{{.Name}}Response{ {{.GoField}}: {{.Var}}}, nil
+}
+{{end}}
+{{- if .HasList}}
+// List{{.Plural}} implements {{$.ServiceName}}.List{{.Plural}}.
+func (s *Server) List{{.Plural}}(ctx context.Context, req *pb.List{{.Plural}}Request) (*pb.List{{.Plural}}Response, error) {
+	after, limit, err := pageBounds(req.GetPageSize(), req.GetPageToken())
+	if err != nil {
+		return nil, err
+	}
+	items, err := s.store.List{{.Plural}}(ctx, after, limit+1)
+	if err != nil {
+		return nil, s.toStatus(ctx, err)
+	}
+	items, next := nextPage(items, limit)
+	return &pb.List{{.Plural}}Response{ {{.GoPluralField}}: items, NextPageToken: next}, nil
+}
+{{end}}
+{{- if .HasUpdate}}
+// {{.Var}}Setters copy one field from src to dst, keyed by update_mask path.
+var {{.Var}}Setters = map[string]func(dst, src *pb.{{.Name}}){
+{{- range .Fields}}
+	"{{.Name}}": func(dst, src *pb.{{$.E.Name}}) { dst.{{.GoName}} = src.Get{{.GoName}}() },
+{{- end}}
+}
+
+// {{.Var}}MutableFields are the update_mask paths applied when the mask is empty.
+var {{.Var}}MutableFields = []string{ {{- range $i, $f := .Fields}}{{if $i}}, {{end}}"{{$f.Name}}"{{end -}} }
+
+// Update{{.Name}} implements {{$.ServiceName}}.Update{{.Name}}. Only the fields
+// named in update_mask change; fields named in the mask but unset are cleared.
+func (s *Server) Update{{.Name}}(ctx context.Context, req *pb.Update{{.Name}}Request) (*pb.Update{{.Name}}Response, error) {
+	in := req.Get{{.GoField}}()
+	if in.GetId() == "" {
+		return nil, status.Error(codes.InvalidArgument, "{{.Snake}}.id: is required")
+	}
+	paths := req.GetUpdateMask().GetPaths()
+	if len(paths) == 0 {
+		paths = {{.Var}}MutableFields
+	}
+	for _, p := range paths {
+		if _, ok := {{.Var}}Setters[p]; !ok {
+			return nil, status.Errorf(codes.InvalidArgument, "update_mask: field %q cannot be updated", p)
+		}
+	}
+	updated, err := s.store.Update{{.Name}}(ctx, in.GetId(), func(cur *pb.{{.Name}}) error {
+		for _, p := range paths {
+			{{.Var}}Setters[p](cur, in)
+		}
+		cur.UpdateTime = timestamppb.New(s.now())
+		return validate{{.Name}}(cur, "{{.Snake}}.")
+	})
+	if err != nil {
+		return nil, s.toStatus(ctx, err)
+	}
+	return &pb.Update{{.Name}}Response{ {{.GoField}}: updated}, nil
+}
+{{end}}
+{{- if .HasDelete}}
+// Delete{{.Name}} implements {{$.ServiceName}}.Delete{{.Name}}.
+func (s *Server) Delete{{.Name}}(ctx context.Context, req *pb.Delete{{.Name}}Request) (*pb.Delete{{.Name}}Response, error) {
+	if req.GetId() == "" {
+		return nil, status.Error(codes.InvalidArgument, "id: is required")
+	}
+	if err := s.store.Delete{{.Name}}(ctx, req.GetId()); err != nil {
+		return nil, s.toStatus(ctx, err)
+	}
+	return &pb.Delete{{.Name}}Response{}, nil
+}
+{{end}}
+{{- if or .HasCreate .HasUpdate}}
+// validate{{.Name}} checks m against the field rules from the spec. prefix is
+// prepended to field paths in violations, e.g. "{{.Snake}}.".
+func validate{{.Name}}(m *pb.{{.Name}}, prefix string) error {
+	var v violations
+{{- range .Fields}}{{if .Validation}}
+{{.Validation}}
+{{- end}}{{end}}
+	return v.err()
+}
+{{end}}
+{{- end}}

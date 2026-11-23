@@ -1,0 +1,33 @@
+.PHONY: generate build test test-postgres lint vuln run docker
+
+generate:
+	buf generate
+
+build:
+	go build -trimpath -o bin/server ./cmd/server
+
+test:
+	go test -race -cover ./...
+{{- if .Postgres}}
+
+# Runs the store tests against a throwaway PostgreSQL in Docker.
+test-postgres:
+	docker run -d --rm --name {{.Name}}-pg -e POSTGRES_PASSWORD=postgres -p 127.0.0.1:55432:5432 postgres:17-alpine
+	until docker exec {{.Name}}-pg pg_isready -U postgres >/dev/null 2>&1; do sleep 1; done
+	TEST_DATABASE_URL=postgres://postgres:postgres@127.0.0.1:55432/postgres?sslmode=disable go test -race -run Postgres ./internal/store/ ; \
+	  status=$$?; docker rm -f {{.Name}}-pg >/dev/null; exit $$status
+{{- end}}
+
+lint:
+	buf lint
+	go vet ./...
+	golangci-lint run ./...
+
+vuln:
+	govulncheck ./...
+
+run:
+	go run ./cmd/server
+
+docker:
+	docker build -t {{.Name}}:dev .

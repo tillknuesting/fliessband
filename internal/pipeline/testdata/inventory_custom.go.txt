@@ -1,0 +1,85 @@
+package service
+
+import (
+	"cmp"
+	"context"
+	"math"
+	"slices"
+
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/timestamppb"
+
+	pb "github.com/acme/inventory/gen/acme/inventory/v1"
+)
+
+const scanPage = 500
+
+// eachProduct calls fn for every stored product, in id order.
+func (s *Server) eachProduct(ctx context.Context, fn func(*pb.Product)) error {
+	after := ""
+	for {
+		page, err := s.store.ListProducts(ctx, after, scanPage)
+		if err != nil {
+			return s.toStatus(ctx, err)
+		}
+		for _, p := range page {
+			fn(p)
+		}
+		if len(page) < scanPage {
+			return nil
+		}
+		after = page[len(page)-1].GetId()
+	}
+}
+
+// AdjustStock changes the stock of the product with the given sku by delta.
+func (s *Server) AdjustStock(ctx context.Context, req *pb.AdjustStockRequest) (*pb.AdjustStockResponse, error) {
+	if req.GetSku() == "" {
+		return nil, status.Error(codes.InvalidArgument, "sku: is required")
+	}
+	var id string
+	if err := s.eachProduct(ctx, func(p *pb.Product) {
+		if p.GetSku() == req.GetSku() {
+			id = p.GetId()
+		}
+	}); err != nil {
+		return nil, err
+	}
+	if id == "" {
+		return nil, status.Errorf(codes.NotFound, "no product with sku %q", req.GetSku())
+	}
+	updated, err := s.store.UpdateProduct(ctx, id, func(p *pb.Product) error {
+		next := int64(p.GetStock()) + int64(req.GetDelta())
+		if next < 0 {
+			return status.Errorf(codes.FailedPrecondition, "stock would drop to %d", next)
+		}
+		if next > math.MaxInt32 {
+			return status.Error(codes.OutOfRange, "stock would overflow")
+		}
+		p.Stock = int32(next)
+		p.UpdateTime = timestamppb.New(s.now())
+		return nil
+	})
+	if err != nil {
+		return nil, s.toStatus(ctx, err)
+	}
+	return &pb.AdjustStockResponse{Product: updated}, nil
+}
+
+// LowStockReport returns active products with stock below threshold, lowest first.
+func (s *Server) LowStockReport(ctx context.Context, req *pb.LowStockReportRequest) (*pb.LowStockReportResponse, error) {
+	if req.GetThreshold() <= 0 {
+		return nil, status.Error(codes.InvalidArgument, "threshold: must be positive")
+	}
+	var low []*pb.Product
+	if err := s.eachProduct(ctx, func(p *pb.Product) {
+		if p.GetActive() && p.GetStock() < req.GetThreshold() {
+			low = append(low, p)
+		}
+	}); err != nil {
+		return nil, err
+	}
+	slices.SortStableFunc(low, func(a, b *pb.Product) int { return cmp.Compare(a.GetStock(), b.GetStock()) })
+	return &pb.LowStockReportResponse{Products: low}, nil
+}

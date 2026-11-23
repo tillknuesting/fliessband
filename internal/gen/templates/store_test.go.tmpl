@@ -1,0 +1,204 @@
+package store
+
+import (
+	"bytes"
+	"errors"
+	"fmt"
+	"os"
+	"runtime/pprof"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/timestamppb"
+
+	pb "{{.GoPkgPath}}"
+)
+
+{{template "leakcheck"}}
+// testStore checks the Store contract. Every implementation runs it, so the
+// in-memory store used in tests behaves like the production database.
+func testStore(t *testing.T, newStore func(t *testing.T) Store) {
+	if err := newStore(t).Ping(t.Context()); err != nil {
+		t.Fatalf("ping: %v", err)
+	}
+{{- range .Entities}}
+	t.Run("{{.Name}}", func(t *testing.T) {
+		t.Run("Lifecycle", func(t *testing.T) { test{{.Name}}Lifecycle(t, newStore(t)) })
+		t.Run("Paging", func(t *testing.T) { test{{.Name}}Paging(t, newStore(t)) })
+{{- if .Unique}}
+		t.Run("Unique", func(t *testing.T) { test{{.Name}}Unique(t, newStore(t)) })
+{{- end}}
+		t.Run("Concurrent", func(t *testing.T) { test{{.Name}}Concurrent(t, newStore(t)) })
+	})
+{{- end}}
+}
+{{range .Entities}}{{$e := .}}
+// record{{.Name}} returns a valid {{.Lower}} with the given id; i varies unique fields.
+func record{{.Name}}(i int, id string) *pb.{{.Name}} {
+	ts := timestamppb.New(time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC))
+	return &pb.{{.Name}}{
+		Id: id,
+{{- range .Fields}}
+		{{.GoName}}: {{.ValidExpr}},
+{{- end}}
+		CreateTime: ts,
+		UpdateTime: ts,
+	}
+}
+
+func test{{.Name}}Lifecycle(t *testing.T, st Store) {
+	ctx := t.Context()
+	in := record{{.Name}}(0, "a")
+	created, err := st.Create{{.Name}}(ctx, in)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if !proto.Equal(created, in) {
+		t.Fatalf("create returned %v, want %v", created, in)
+	}
+	if _, err := st.Create{{.Name}}(ctx, record{{.Name}}(1, "a")); !errors.Is(err, ErrAlreadyExists) {
+		t.Fatalf("duplicate id: got %v, want ErrAlreadyExists", err)
+	}
+	got, err := st.Get{{.Name}}(ctx, "a")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if !proto.Equal(got, in) {
+		t.Fatalf("get returned %v, want %v", got, in)
+	}
+	if _, err := st.Get{{.Name}}(ctx, "missing"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("get missing: got %v, want ErrNotFound", err)
+	}
+
+	boom := errors.New("boom")
+	if _, err := st.Update{{.Name}}(ctx, "a", func(*pb.{{.Name}}) error { return boom }); !errors.Is(err, boom) {
+		t.Fatalf("update with failing mutate: got %v", err)
+	}
+	if _, err := st.Update{{.Name}}(ctx, "missing", func(*pb.{{.Name}}) error { return nil }); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("update missing: got %v, want ErrNotFound", err)
+	}
+	want := proto.Clone(in).(*pb.{{.Name}})
+{{- with .Update}}
+	want.{{.Field.GoName}} = {{.Expr}}
+{{- end}}
+	upd, err := st.Update{{.Name}}(ctx, "a", func(x *pb.{{.Name}}) error {
+		x.Id = "ignored"
+{{- with .Update}}
+		x.{{.Field.GoName}} = want.Get{{.Field.GoName}}()
+{{- end}}
+		return nil
+	})
+	if err != nil || !proto.Equal(upd, want) {
+		t.Fatalf("update: %v, %v; want %v (the id must not change)", upd, err, want)
+	}
+	if got, err := st.Get{{.Name}}(ctx, "a"); err != nil || !proto.Equal(got, want) {
+		t.Fatalf("get after update: %v, %v; want %v", got, err, want)
+	}
+
+	if items, err := st.List{{.Plural}}(ctx, "", 10); err != nil || len(items) != 1 {
+		t.Fatalf("list: %d items, %v; want 1", len(items), err)
+	}
+	if items, err := st.List{{.Plural}}(ctx, "a", 10); err != nil || len(items) != 0 {
+		t.Fatalf("list after the last id: %d items, %v; want 0", len(items), err)
+	}
+
+	if err := st.Delete{{.Name}}(ctx, "a"); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if err := st.Delete{{.Name}}(ctx, "a"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("delete twice: got %v, want ErrNotFound", err)
+	}
+	if _, err := st.Get{{.Name}}(ctx, "a"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("get deleted: got %v, want ErrNotFound", err)
+	}
+}
+
+func test{{.Name}}Paging(t *testing.T, st Store) {
+	ctx := t.Context()
+	for i := range 5 {
+		if _, err := st.Create{{.Name}}(ctx, record{{.Name}}(i, fmt.Sprintf("id-%d", i))); err != nil {
+			t.Fatalf("create %d: %v", i, err)
+		}
+	}
+	var ids []string
+	after := ""
+	for range 10 {
+		items, err := st.List{{.Plural}}(ctx, after, 2)
+		if err != nil {
+			t.Fatalf("list after %q: %v", after, err)
+		}
+		if len(items) == 0 {
+			break
+		}
+		for _, x := range items {
+			ids = append(ids, x.GetId())
+		}
+		after = items[len(items)-1].GetId()
+	}
+	if got := strings.Join(ids, ","); got != "id-0,id-1,id-2,id-3,id-4" {
+		t.Fatalf("paged ids = %s, want id-0 … id-4 in order", got)
+	}
+	if items, err := st.List{{.Plural}}(ctx, "", 0); err != nil || len(items) != 0 {
+		t.Fatalf("limit 0: %d items, %v", len(items), err)
+	}
+}
+{{- if .Unique}}
+
+func test{{.Name}}Unique(t *testing.T, st Store) {
+	ctx := t.Context()
+	if _, err := st.Create{{.Name}}(ctx, record{{.Name}}(0, "a")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.Create{{.Name}}(ctx, record{{.Name}}(0, "b")); !errors.Is(err, ErrAlreadyExists) {
+		t.Fatalf("create with taken unique value: got %v, want ErrAlreadyExists", err)
+	}
+	if _, err := st.Create{{.Name}}(ctx, record{{.Name}}(1, "b")); err != nil {
+		t.Fatal(err)
+	}
+	taken := record{{.Name}}(0, "a")
+	_, err := st.Update{{.Name}}(ctx, "b", func(x *pb.{{.Name}}) error {
+{{- range .Unique}}
+		x.{{.GoName}} = taken.Get{{.GoName}}()
+{{- end}}
+		return nil
+	})
+	if !errors.Is(err, ErrAlreadyExists) {
+		t.Fatalf("update to taken unique value: got %v, want ErrAlreadyExists", err)
+	}
+}
+{{- end}}
+
+func test{{.Name}}Concurrent(t *testing.T, st Store) {
+	ctx := t.Context()
+	var wg sync.WaitGroup
+	for i := range 50 {
+		wg.Go(func() {
+			if _, err := st.Create{{.Name}}(ctx, record{{.Name}}(i, fmt.Sprintf("id-%02d", i))); err != nil {
+				t.Error(err)
+			}
+			if _, err := st.List{{.Plural}}(ctx, "", 10); err != nil {
+				t.Error(err)
+			}
+		})
+	}
+	wg.Wait()
+	if items, err := st.List{{.Plural}}(ctx, "", 100); err != nil || len(items) != 50 {
+		t.Fatalf("after concurrent creates: %d items, %v; want 50", len(items), err)
+	}
+	var updates sync.WaitGroup
+	for range 20 {
+		updates.Go(func() {
+			if _, err := st.Update{{.Name}}(ctx, "id-00", func(x *pb.{{.Name}}) error {
+				x.UpdateTime = timestamppb.Now()
+				return nil
+			}); err != nil {
+				t.Error(err)
+			}
+		})
+	}
+	updates.Wait()
+}
+{{end}}

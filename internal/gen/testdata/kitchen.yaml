@@ -1,0 +1,42 @@
+# Every field type and rule, to test the generator and the PostgreSQL mapping.
+name: kitchen
+module: example.com/kitchen
+package: kitchen.v1
+description: A spec that uses every field type.
+
+entities:
+  - name: Gadget
+    fields:
+      - {name: name, type: string, required: true, unique: true, pattern: "^G-[0-9]{3}$", example: "G-001"}
+      - {name: label, type: string, min_len: 2, max_len: 20}
+      - {name: note, type: string, required: true, max_len: 50}
+      - {name: enabled, type: bool}
+      - {name: blob, type: bytes}
+      - {name: small, type: int32, min: -5, max: 5}
+      - {name: big, type: int64, min: 0}
+      - {name: count, type: uint32, max: 1000}
+      - {name: huge, type: uint64}
+      - {name: ratio, type: float, min: 0.5}
+      - {name: score, type: double, max: 99.5}
+      - {name: seen, type: timestamp}
+      - {name: due, type: timestamp, required: true}
+      - {name: tags, type: string, repeated: true}
+      - {name: flags, type: bool, repeated: true}
+      - {name: chunks, type: bytes, repeated: true}
+      - {name: levels, type: int32, repeated: true}
+      - {name: totals, type: int64, repeated: true}
+      - {name: ids, type: uint32, repeated: true}
+      - {name: bigs, type: uint64, repeated: true}
+      - {name: weights, type: float, repeated: true}
+      - {name: scores, type: double, repeated: true}
+      - {name: times, type: timestamp, repeated: true, required: true}
+  - name: Order
+    fields:
+      - {name: number, type: string, unique: true, pattern: "^[0-9]{4}$", example: "1000"}
+    ops: [create, get]
+
+methods:
+  - name: Ping
+    doc: Returns pong.
+    response:
+      - {name: message, type: string}

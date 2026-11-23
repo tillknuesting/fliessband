@@ -1,0 +1,250 @@
+package service
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"math"
+	"regexp"
+	"slices"
+	"strconv"
+	"strings"
+	"testing"
+	"uuid"
+
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/timestamppb"
+
+	pb "{{.GoPkgPath}}"
+	"{{.Module}}/internal/store"
+)
+
+// The acceptance examples come from the service spec. The factory owns this
+// file: the implement stage cannot change it, so passing it means the code
+// meets the spec rather than tests written to fit the code. Examples marked
+// holdout are not shown to the implementer.
+
+type acceptanceExample struct {
+	method, name string
+	holdout      bool
+	given        []acceptanceSeed
+	request      string
+	expect       []acceptanceExpect
+	code         codes.Code
+}
+
+type acceptanceSeed struct{ entity, json string }
+
+type acceptanceExpect struct{ path, want string }
+
+var acceptanceExamples = []acceptanceExample{
+{{- range .Examples}}
+	{
+		method: "{{.Method}}", name: {{printf "%q" .Name}}, holdout: {{.Holdout}},
+		given: []acceptanceSeed{ {{- range .Given}}{ "{{.Entity}}", {{printf "%q" .JSON}} }, {{end -}} },
+		request: {{printf "%q" .Request}},
+		expect: []acceptanceExpect{ {{- range .Expect}}{ {{printf "%q" .Path}}, {{printf "%q" .Want}} }, {{end -}} },
+		code: {{.Code}},
+	},
+{{- end}}
+}
+
+func TestAcceptance(t *testing.T) {
+	var methods []string
+	for _, ex := range acceptanceExamples {
+		if !slices.Contains(methods, ex.method) {
+			methods = append(methods, ex.method)
+		}
+	}
+	for _, m := range methods {
+		t.Run(m, func(t *testing.T) {
+			for _, ex := range acceptanceExamples {
+				if ex.method == m {
+					t.Run(ex.name, func(t *testing.T) { runAcceptance(t, ex) })
+				}
+			}
+		})
+	}
+}
+
+type acceptanceClient = pb.{{.ServiceName}}Client
+
+// acceptanceSeeders create one record from JSON and return it as JSON values.
+var acceptanceSeeders = map[string]func(t *testing.T, c acceptanceClient, st *store.Memory, js string) map[string]any{
+{{- range .Entities}}
+	"{{.Name}}": func(t *testing.T, c acceptanceClient, st *store.Memory, js string) map[string]any {
+		t.Helper()
+		x := &pb.{{.Name}}{}
+		if err := protojson.Unmarshal([]byte(js), x); err != nil {
+			t.Fatalf("given {{.Name}} %s: %v", js, err)
+		}
+{{- if .HasCreate}}
+		resp, err := c.Create{{.Name}}(t.Context(), &pb.Create{{.Name}}Request{ {{.GoField}}: x})
+		if err != nil {
+			t.Fatalf("seeding {{.Name}} %s: %v", js, err)
+		}
+		return acceptanceJSON(t, resp.Get{{.GoField}}())
+{{- else}}
+		x.Id = uuid.NewV7().String()
+		x.CreateTime = timestamppb.Now()
+		x.UpdateTime = x.CreateTime
+		created, err := st.Create{{.Name}}(t.Context(), x)
+		if err != nil {
+			t.Fatalf("seeding {{.Name}} %s: %v", js, err)
+		}
+		return acceptanceJSON(t, created)
+{{- end}}
+	},
+{{- end}}
+}
+
+// acceptanceCalls decode a JSON request and call the method.
+var acceptanceCalls = map[string]func(ctx context.Context, c acceptanceClient, js string) (proto.Message, error){
+{{- range .Methods}}
+	"{{.Name}}": func(ctx context.Context, c acceptanceClient, js string) (proto.Message, error) {
+		in := &pb.{{.Name}}Request{}
+		if err := protojson.Unmarshal([]byte(js), in); err != nil {
+			return nil, fmt.Errorf("request %s: %w", js, err)
+		}
+		resp, err := c.{{.Name}}(ctx, in)
+		if err != nil {
+			return nil, err
+		}
+		return resp, nil
+	},
+{{- end}}
+}
+
+func runAcceptance(t *testing.T, ex acceptanceExample) {
+	c, st := newClient(t)
+	refs := map[string]string{}
+	seeded := map[string]int{}
+	for _, g := range ex.given {
+		obj := acceptanceSeeders[g.entity](t, c, st, acceptanceResolve(t, g.json, refs))
+		i := seeded[g.entity]
+		seeded[g.entity]++
+		for k, v := range obj {
+			refs[g.entity+"."+strconv.Itoa(i)+"."+k] = acceptanceCanon(v)
+		}
+	}
+	resp, err := acceptanceCalls[ex.method](t.Context(), c, acceptanceResolve(t, ex.request, refs))
+	if ex.code != codes.OK {
+		if got := status.Code(err); got != ex.code {
+			t.Fatalf("%s returned %v (%v), want %v", ex.method, got, err, ex.code)
+		}
+		return
+	}
+	if err != nil {
+		t.Fatalf("%s failed: %v", ex.method, err)
+	}
+	got := acceptanceJSON(t, resp)
+	for _, e := range ex.expect {
+		var want any
+		if err := json.Unmarshal([]byte(acceptanceResolve(t, e.want, refs)), &want); err != nil {
+			t.Fatalf("expected value for %s: %v", e.path, err)
+		}
+		v, ok := acceptanceLookup(got, e.path)
+		switch {
+		case !ok:
+			t.Errorf("%s: not in the response %v", e.path, got)
+		case acceptanceCanon(v) != acceptanceCanon(want):
+			t.Errorf("%s = %s, want %s", e.path, acceptanceCanon(v), acceptanceCanon(want))
+		}
+	}
+}
+
+// acceptanceJSON renders a message as JSON values with proto field names,
+// including unset fields, so that zero values can be checked.
+func acceptanceJSON(t *testing.T, m proto.Message) map[string]any {
+	t.Helper()
+	b, err := protojson.MarshalOptions{UseProtoNames: true, EmitUnpopulated: true}.Marshal(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out map[string]any
+	if err := json.Unmarshal(b, &out); err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+var acceptanceRef = regexp.MustCompile(`\$\{([A-Za-z0-9_.]+)\}`)
+
+// acceptanceResolve replaces ${Entity.index.field} with the seeded value.
+func acceptanceResolve(t *testing.T, js string, refs map[string]string) string {
+	t.Helper()
+	return acceptanceRef.ReplaceAllStringFunc(js, func(m string) string {
+		v, ok := refs[acceptanceRef.FindStringSubmatch(m)[1]]
+		if !ok {
+			t.Fatalf("unknown reference %s", m)
+		}
+		q, _ := json.Marshal(v)
+		return string(q[1 : len(q)-1]) // the reference sits inside a JSON string
+	})
+}
+
+// acceptanceLookup follows a dotted path; a number indexes a list and #
+// is its length.
+func acceptanceLookup(v any, path string) (any, bool) {
+	for seg := range strings.SplitSeq(path, ".") {
+		switch t := v.(type) {
+		case map[string]any:
+			x, ok := t[seg]
+			if !ok {
+				return nil, false
+			}
+			v = x
+		case []any:
+			if seg == "#" {
+				return float64(len(t)), true
+			}
+			i, err := strconv.Atoi(seg)
+			if err != nil || i < 0 || i >= len(t) {
+				return nil, false
+			}
+			v = t[i]
+		default:
+			return nil, false
+		}
+	}
+	return v, true
+}
+
+// acceptanceCanon renders a JSON value so that equal values compare equal
+// however they were written: protojson writes 64-bit integers as strings.
+func acceptanceCanon(v any) string {
+	switch t := v.(type) {
+	case nil:
+		return "null"
+	case string:
+		return t
+	case bool:
+		return strconv.FormatBool(t)
+	case float64:
+		if t == math.Trunc(t) && math.Abs(t) < 1e15 {
+			return strconv.FormatInt(int64(t), 10)
+		}
+		return strconv.FormatFloat(t, 'g', -1, 64)
+	case []any:
+		parts := make([]string, len(t))
+		for i, el := range t {
+			parts[i] = strconv.Quote(acceptanceCanon(el))
+		}
+		return "[" + strings.Join(parts, ",") + "]"
+	case map[string]any:
+		keys := make([]string, 0, len(t))
+		for k := range t {
+			keys = append(keys, k)
+		}
+		slices.Sort(keys)
+		parts := make([]string, len(keys))
+		for i, k := range keys {
+			parts[i] = strconv.Quote(k) + ":" + strconv.Quote(acceptanceCanon(t[k]))
+		}
+		return "{" + strings.Join(parts, ",") + "}"
+	}
+	return fmt.Sprint(v)
+}

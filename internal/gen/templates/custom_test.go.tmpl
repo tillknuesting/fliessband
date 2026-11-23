@@ -1,0 +1,18 @@
+package service
+
+import (
+	"testing"
+
+	"google.golang.org/grpc/codes"
+
+	pb "{{.GoPkgPath}}"
+)
+{{range .Methods}}
+// Test{{.Name}}Pending documents that {{.Name}} is still a stub. The implement
+// stage replaces this file with real tests.
+func Test{{.Name}}Pending(t *testing.T) {
+	c, _ := newClient(t)
+	_, err := c.{{.Name}}(t.Context(), &pb.{{.Name}}Request{})
+	wantCode(t, err, codes.Unimplemented)
+}
+{{end}}

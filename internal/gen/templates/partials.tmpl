@@ -1,0 +1,17 @@
+{{define "leakcheck"}}
+// TestMain fails the package when a test leaks a goroutine. It uses the
+// runtime's goroutine leak profile (Go 1.27), which finds goroutines blocked
+// forever on a channel or lock that nothing else can reach.
+func TestMain(m *testing.M) {
+	code := m.Run()
+	if code == 0 {
+		p := pprof.Lookup("goroutineleak")
+		var buf bytes.Buffer
+		if err := p.WriteTo(&buf, 1); err == nil && p.Count() > 0 {
+			fmt.Fprintf(os.Stderr, "FAIL: %d leaked goroutine(s)\n%s", p.Count(), buf.String())
+			code = 1
+		}
+	}
+	os.Exit(code)
+}
+{{end}}

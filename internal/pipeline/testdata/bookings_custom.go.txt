@@ -1,0 +1,51 @@
+package service
+
+import (
+	"context"
+
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+
+	pb "github.com/acme/bookings/gen/acme/bookings/v1"
+)
+
+// CheckAvailability returns the rooms with no reservation overlapping [check_in, check_out).
+func (s *Server) CheckAvailability(ctx context.Context, req *pb.CheckAvailabilityRequest) (*pb.CheckAvailabilityResponse, error) {
+	in, out := req.GetCheckIn(), req.GetCheckOut()
+	if in == nil || out == nil || !out.AsTime().After(in.AsTime()) {
+		return nil, status.Error(codes.InvalidArgument, "check_out: must be after check_in")
+	}
+	busy := map[string]bool{}
+	for after := ""; ; {
+		page, err := s.store.ListReservations(ctx, after, 500)
+		if err != nil {
+			return nil, s.toStatus(ctx, err)
+		}
+		for _, r := range page {
+			if r.GetCheckIn().AsTime().Before(out.AsTime()) && in.AsTime().Before(r.GetCheckOut().AsTime()) {
+				busy[r.GetRoomId()] = true
+			}
+		}
+		if len(page) < 500 {
+			break
+		}
+		after = page[len(page)-1].GetId()
+	}
+	var free []*pb.Room
+	for after := ""; ; {
+		page, err := s.store.ListRooms(ctx, after, 500)
+		if err != nil {
+			return nil, s.toStatus(ctx, err)
+		}
+		for _, room := range page {
+			if !busy[room.GetId()] {
+				free = append(free, room)
+			}
+		}
+		if len(page) < 500 {
+			break
+		}
+		after = page[len(page)-1].GetId()
+	}
+	return &pb.CheckAvailabilityResponse{Rooms: free}, nil
+}

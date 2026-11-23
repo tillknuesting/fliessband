@@ -1,0 +1,27 @@
+version: "2"
+run:
+  timeout: 5m
+linters:
+  default: standard # errcheck, govet, ineffassign, staticcheck, unused
+  enable:
+    - bodyclose
+    - errorlint
+    - gosec
+    - misspell
+    - nilerr
+    - unconvert
+  settings:
+    gosec:
+      excludes:
+        - G204 # the factory runs tools by design; arguments are never shell strings from a request
+        - G304 # file paths are built by the factory; request paths go through safePath (tested)
+        - G703 # run directories come from run ids that are only matched against existing directories
+  exclusions:
+    paths:
+      - data/
+    rules:
+      - path: _test\.go
+        linters: [gosec, errcheck]
+formatters:
+  enable:
+    - gofmt

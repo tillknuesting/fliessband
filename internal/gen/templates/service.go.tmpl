@@ -1,0 +1,148 @@
+// Package service implements the {{.FullServiceName}} gRPC API.
+package service
+
+import (
+	"context"
+	"encoding/base64"
+	"errors"
+	"log/slog"
+	"strings"
+	"time"
+	"uuid"
+
+	"google.golang.org/genproto/googleapis/rpc/errdetails"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+
+	pb "{{.GoPkgPath}}"
+	"{{.Module}}/internal/store"
+)
+
+// Server implements pb.{{.ServiceName}}Server.
+type Server struct {
+	pb.Unimplemented{{.ServiceName}}Server
+
+	store store.Store
+	log   *slog.Logger
+	now   func() time.Time
+}
+
+// New returns a Server backed by the given store.
+func New(st store.Store, log *slog.Logger) *Server {
+	return &Server{store: st, log: log, now: now}
+}
+
+// now returns the current time at the microsecond precision that
+// PostgreSQL stores, so responses look the same with either store.
+func now() time.Time { return time.Now().UTC().Truncate(time.Microsecond) }
+{{- if .AnyCreate}}
+
+// newID returns a UUIDv7 (RFC 9562): unique without coordination, and
+// ordered by creation time, which keeps database indexes compact and makes
+// id order the natural list order.
+func newID() string { return uuid.NewV7().String() }
+{{- end}}
+{{- if .Entities}}
+
+// toStatus maps store and context errors to gRPC status errors. Unknown
+// errors are logged and returned as Internal without details.
+func (s *Server) toStatus(ctx context.Context, err error) error {
+	if _, ok := status.FromError(err); ok {
+		return err
+	}
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		return status.Error(codes.NotFound, err.Error())
+	case errors.Is(err, store.ErrAlreadyExists):
+		return status.Error(codes.AlreadyExists, err.Error())
+	case errors.Is(err, context.Canceled):
+		return status.Error(codes.Canceled, "request canceled")
+	case errors.Is(err, context.DeadlineExceeded):
+		return status.Error(codes.DeadlineExceeded, "deadline exceeded")
+	}
+	s.log.ErrorContext(ctx, "internal error", "err", err)
+	return status.Error(codes.Internal, "internal error")
+}
+{{- end}}
+{{- if or .AnyValidate .AnyList}}
+
+// violations collects field-level validation errors.
+type violations []*errdetails.BadRequest_FieldViolation
+
+func (v *violations) add(field, description string) {
+	*v = append(*v, &errdetails.BadRequest_FieldViolation{Field: field, Description: description})
+}
+
+// err returns an InvalidArgument status carrying the violations as
+// errdetails.BadRequest, or nil if there are none.
+func (v violations) err() error {
+	if len(v) == 0 {
+		return nil
+	}
+	msgs := make([]string, len(v))
+	for i, fv := range v {
+		msgs[i] = fv.GetField() + ": " + fv.GetDescription()
+	}
+	st := status.New(codes.InvalidArgument, strings.Join(msgs, "; "))
+	if detailed, err := st.WithDetails(&errdetails.BadRequest{FieldViolations: v}); err == nil {
+		st = detailed
+	}
+	return st.Err()
+}
+{{- end}}
+{{- if .AnyList}}
+
+const (
+	defaultPageSize = 50
+	maxPageSize     = 1000
+	maxTokenID      = 256
+)
+
+// pageBounds validates paging parameters and returns the id to continue
+// after and the page size.
+func pageBounds(size int32, token string) (after string, limit int, err error) {
+	var v violations
+	if size < 0 {
+		v.add("page_size", "must not be negative")
+	}
+	limit = min(max(int(size), 0), maxPageSize)
+	if limit == 0 {
+		limit = defaultPageSize
+	}
+	if token != "" {
+		var derr error
+		if after, derr = decodePageToken(token); derr != nil {
+			v.add("page_token", derr.Error())
+		}
+	}
+	return after, limit, v.err()
+}
+
+// encodePageToken returns an opaque token that continues after the given id.
+func encodePageToken(after string) string {
+	return base64.RawURLEncoding.EncodeToString([]byte("k" + after))
+}
+
+func decodePageToken(token string) (string, error) {
+	b, err := base64.RawURLEncoding.Strict().DecodeString(token)
+	if err != nil || len(b) < 2 || len(b) > maxTokenID+1 || b[0] != 'k' {
+		return "", errors.New("malformed page token")
+	}
+	// The decoder skips \r and \n, so compare with the canonical encoding:
+	// only tokens this server issued are accepted.
+	if encodePageToken(string(b[1:])) != token {
+		return "", errors.New("malformed page token")
+	}
+	return string(b[1:]), nil
+}
+
+// nextPage trims items fetched with limit+1 to limit and returns the token
+// for the next page, or "" if this is the last one.
+func nextPage[T interface{ GetId() string }](items []T, limit int) ([]T, string) {
+	if len(items) <= limit {
+		return items, ""
+	}
+	items = items[:limit]
+	return items, encodePageToken(items[limit-1].GetId())
+}
+{{- end}}

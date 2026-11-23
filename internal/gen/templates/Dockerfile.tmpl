@@ -1,0 +1,17 @@
+# Build: docker build -t {{.Name}} .
+# The golang tag follows the minor version so security patch releases apply
+# on rebuild; pin both images by digest (e.g. with Renovate) for reproducible
+# builds. Works with BuildKit and with the legacy builder.
+FROM golang:{{.GoMinor}} AS build
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/server ./cmd/server
+
+# distroless: no shell or package manager, runs as an unprivileged user.
+FROM gcr.io/distroless/static-debian12:nonroot
+COPY --from=build /out/server /server
+EXPOSE {{.Port}}
+USER nonroot:nonroot
+ENTRYPOINT ["/server"]

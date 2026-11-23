@@ -1,0 +1,37 @@
+name: tasks
+module: example.com/tasks
+package: tasks.v1
+description: A to-do service with priorities and due dates.
+
+entities:
+  - name: Task
+    fields:
+      - {name: title, type: string, required: true, max_len: 200}
+      - {name: notes, type: string, max_len: 2000}
+      - {name: priority, type: int32, min: 1, max: 5}
+      - {name: due_time, type: timestamp}
+      - {name: labels, type: string, repeated: true}
+      - {name: done, type: bool}
+
+methods:
+  - name: CompleteTask
+    doc: Marks the task with the given id as done and returns it. NOT_FOUND if it does not exist.
+    request:
+      - {name: id, type: string}
+    response:
+      - {name: task, type: Task}
+    examples:
+      - name: marks the task as done
+        given:
+          Task: [{title: Write the report, priority: 2}]
+        request: {id: "${Task.0.id}"}
+        expect: {task.id: "${Task.0.id}", task.done: true, task.title: Write the report}
+      - name: unknown task
+        request: {id: does-not-exist}
+        error: NOT_FOUND
+      - name: keeps the other fields
+        holdout: true
+        given:
+          Task: [{title: Pay rent, notes: by the 3rd, priority: 5, labels: [home]}]
+        request: {id: "${Task.0.id}"}
+        expect: {task.done: true, task.notes: by the 3rd, task.priority: 5, task.labels: [home]}

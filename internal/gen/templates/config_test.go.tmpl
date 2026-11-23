@@ -1,0 +1,72 @@
+package config
+
+import (
+	"log/slog"
+	"strings"
+	"testing"
+	"time"
+)
+
+func env(m map[string]string) func(string) string {
+	return func(k string) string { return m[k] }
+}
+
+func TestDefaults(t *testing.T) {
+	cfg, err := load(env(nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Addr != ":{{.Port}}" || cfg.LogLevel != slog.LevelInfo || cfg.ShutdownTimeout != 10*time.Second ||
+		cfg.RequestTimeout != 30*time.Second || cfg.MaxInFlight != 1024 || cfg.MaxConnectionAge != 5*time.Minute || cfg.DrainDelay != 0 {
+		t.Fatalf("unexpected defaults: %+v", cfg)
+	}
+}
+
+func TestOverrides(t *testing.T) {
+	cfg, err := load(env(map[string]string{
+		"GRPC_ADDR": "127.0.0.1:9000", "LOG_LEVEL": "debug", "SHUTDOWN_TIMEOUT": "3s",
+		"REQUEST_TIMEOUT": "2s", "MAX_IN_FLIGHT": "7", "MAX_CONNECTION_AGE": "1m", "DRAIN_DELAY": "5s",
+		"TLS_CERT_FILE": "c.pem", "TLS_KEY_FILE": "k.pem", "TLS_CLIENT_CA_FILE": "ca.pem",
+{{- if .Postgres}}
+		"DATABASE_URL": "postgres://db/app",
+{{- end}}
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Addr != "127.0.0.1:9000" || cfg.LogLevel != slog.LevelDebug || cfg.ShutdownTimeout != 3*time.Second ||
+		cfg.RequestTimeout != 2*time.Second || cfg.MaxInFlight != 7 || cfg.MaxConnectionAge != time.Minute ||
+		cfg.DrainDelay != 5*time.Second || cfg.TLSCertFile != "c.pem" || cfg.TLSKeyFile != "k.pem" || cfg.TLSClientCAFile != "ca.pem" {
+		t.Fatalf("overrides not applied: %+v", cfg)
+	}
+{{- if .Postgres}}
+	if cfg.DatabaseURL != "postgres://db/app" {
+		t.Fatalf("DATABASE_URL not applied: %q", cfg.DatabaseURL)
+	}
+{{- end}}
+}
+
+func TestZeroValues(t *testing.T) {
+	cfg, err := load(env(map[string]string{"REQUEST_TIMEOUT": "0s", "MAX_IN_FLIGHT": "0", "DRAIN_DELAY": "0s", "MAX_CONNECTION_AGE": "0s"}))
+	if err != nil {
+		t.Fatalf("zero values must be accepted (they turn a limit off): %v", err)
+	}
+	if cfg.RequestTimeout != 0 || cfg.MaxInFlight != 0 || cfg.DrainDelay != 0 || cfg.MaxConnectionAge != 0 {
+		t.Fatalf("zero values not applied: %+v", cfg)
+	}
+}
+
+func TestInvalid(t *testing.T) {
+	for _, tt := range []struct{ env map[string]string; want string }{
+		{map[string]string{"LOG_LEVEL": "loud"}, "LOG_LEVEL"},
+		{map[string]string{"SHUTDOWN_TIMEOUT": "soon"}, "SHUTDOWN_TIMEOUT"},
+		{map[string]string{"REQUEST_TIMEOUT": "-1s"}, "REQUEST_TIMEOUT"},
+		{map[string]string{"MAX_IN_FLIGHT": "many"}, "MAX_IN_FLIGHT"},
+		{map[string]string{"TLS_CERT_FILE": "c.pem"}, "TLS_KEY_FILE"},
+		{map[string]string{"TLS_CLIENT_CA_FILE": "ca.pem"}, "TLS_CLIENT_CA_FILE"},
+	} {
+		if _, err := load(env(tt.env)); err == nil || !strings.Contains(err.Error(), tt.want) {
+			t.Errorf("load(%v) = %v, want an error mentioning %s", tt.env, err, tt.want)
+		}
+	}
+}

@@ -1,0 +1,6 @@
+data/
+web/ui/node_modules/
+.tools/
+.git/
+.claude/
+*.out

@@ -1,0 +1,19 @@
+package service
+
+import (
+	"context"
+
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+
+	pb "{{.GoPkgPath}}"
+)
+{{range .Methods}}
+// {{.Name}} implements {{$.ServiceName}}.{{.Name}}.
+//
+{{comment "" (or .Doc "No description in the spec.")}}
+func (s *Server) {{.Name}}(ctx context.Context, req *pb.{{.Name}}Request) (*pb.{{.Name}}Response, error) {
+	// fliessband:implement {{.Name}}
+	return nil, status.Error(codes.Unimplemented, "{{.Name}} is not implemented yet")
+}
+{{end}}

@@ -1,0 +1,122 @@
+package service
+
+import (
+	"bytes"
+	"context"
+	"encoding/base64"
+	"errors"
+	"fmt"
+	"log/slog"
+	"net"
+	"os"
+	"runtime/pprof"
+	"strings"
+	"testing"
+
+	"google.golang.org/genproto/googleapis/rpc/errdetails"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/status"
+	"google.golang.org/grpc/test/bufconn"
+
+	pb "{{.GoPkgPath}}"
+	"{{.Module}}/internal/store"
+)
+
+{{template "leakcheck"}}
+// newClient serves the service on an in-memory listener and returns a client
+// and the store behind it.
+func newClient(t *testing.T) (pb.{{.ServiceName}}Client, *store.Memory) {
+	t.Helper()
+	st := store.NewMemory()
+	lis := bufconn.Listen(1 << 20)
+	srv := grpc.NewServer()
+	pb.Register{{.ServiceName}}Server(srv, New(st, slog.New(slog.DiscardHandler)))
+	go func() { _ = srv.Serve(lis) }()
+	t.Cleanup(srv.Stop)
+
+	conn, err := grpc.NewClient("passthrough:///bufnet",
+		grpc.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) { return lis.DialContext(ctx) }),
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+	)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	return pb.New{{.ServiceName}}Client(conn), st
+}
+
+// wantCode fails the test unless err carries the given gRPC code.
+func wantCode(t *testing.T, err error, want codes.Code) {
+	t.Helper()
+	if got := status.Code(err); got != want {
+		t.Fatalf("got code %v (%v), want %v", got, err, want)
+	}
+}
+
+// wantViolation fails the test unless err is InvalidArgument with a field
+// violation for field in its errdetails.BadRequest.
+func wantViolation(t *testing.T, err error, field string) {
+	t.Helper()
+	wantCode(t, err, codes.InvalidArgument)
+	for _, d := range status.Convert(err).Details() {
+		if br, ok := d.(*errdetails.BadRequest); ok {
+			for _, v := range br.GetFieldViolations() {
+				if v.GetField() == field {
+					return
+				}
+			}
+		}
+	}
+	t.Fatalf("no violation for %q in %v", field, err)
+}
+{{- if .Entities}}
+
+func TestToStatus(t *testing.T) {
+	s := New(store.NewMemory(), slog.New(slog.DiscardHandler))
+	tests := []struct {
+		err  error
+		want codes.Code
+	}{
+		{fmt.Errorf("x: %w", store.ErrNotFound), codes.NotFound},
+		{fmt.Errorf("x: %w", store.ErrAlreadyExists), codes.AlreadyExists},
+		{context.Canceled, codes.Canceled},
+		{context.DeadlineExceeded, codes.DeadlineExceeded},
+		{status.Error(codes.FailedPrecondition, "x"), codes.FailedPrecondition},
+		{errors.New("boom"), codes.Internal},
+	}
+	for _, tt := range tests {
+		if got := status.Code(s.toStatus(t.Context(), tt.err)); got != tt.want {
+			t.Errorf("toStatus(%v) = %v, want %v", tt.err, got, tt.want)
+		}
+	}
+}
+{{- end}}
+{{- if .AnyList}}
+
+func TestPageTokens(t *testing.T) {
+	for _, id := range []string{"a", "0190a6b4-6d1c-7c3e-9f00-1234567890ab", strings.Repeat("x", maxTokenID)} {
+		got, err := decodePageToken(encodePageToken(id))
+		if err != nil || got != id {
+			t.Fatalf("round trip %q: got %q, %v", id, got, err)
+		}
+	}
+	raw := func(s string) string { return base64.RawURLEncoding.EncodeToString([]byte(s)) }
+	for _, bad := range []string{"!!", raw("x1"), raw("k"), raw("k" + strings.Repeat("a", maxTokenID+1)), "a\r00"} {
+		if _, err := decodePageToken(bad); err == nil {
+			t.Errorf("decodePageToken(%q) succeeded, want error", bad)
+		}
+	}
+{{- with index .Entities 0}}
+	items := []*pb.{{.Name}}{ {Id: "a"}, {Id: "b"}, {Id: "c"} }
+	if page, next := nextPage(items, 3); len(page) != 3 || next != "" {
+		t.Errorf("last page: %d items, token %q; want 3 items and no token", len(page), next)
+	}
+	page, next := nextPage(items, 2)
+	if after, err := decodePageToken(next); len(page) != 2 || err != nil || after != "b" {
+		t.Errorf("first page: %d items, token for %q (%v); want 2 items and a token after b", len(page), after, err)
+	}
+{{- end}}
+}
+{{- end}}

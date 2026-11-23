@@ -1,0 +1,54 @@
+name: bookings
+module: github.com/acme/bookings
+package: acme.bookings.v1
+description: Rooms and reservations for a small hotel.
+
+entities:
+  - name: Room
+    fields:
+      - {name: number, type: string, required: true, unique: true, pattern: "^[0-9]{3}$", example: "101"}
+      - {name: beds, type: int32, min: 1, max: 6}
+      - {name: nightly_rate_cents, type: int64, min: 0}
+  - name: Reservation
+    fields:
+      - {name: room_id, type: string, required: true}
+      - {name: guest_name, type: string, required: true, min_len: 2, max_len: 100}
+      - {name: guest_email, type: string, required: true, pattern: "^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$", example: "ada@example.com"}
+      - {name: check_in, type: timestamp, required: true}
+      - {name: check_out, type: timestamp, required: true}
+
+methods:
+  - name: CheckAvailability
+    doc: >-
+      Returns the rooms that have no reservation overlapping the half-open
+      interval [check_in, check_out). check_out must be after check_in
+      (INVALID_ARGUMENT otherwise).
+    request:
+      - {name: check_in, type: timestamp}
+      - {name: check_out, type: timestamp}
+    response:
+      - {name: rooms, type: Room, repeated: true}
+    examples:
+      - name: returns rooms without an overlapping reservation
+        given:
+          Room:
+            - {number: "101", beds: 2}
+            - {number: "102", beds: 1}
+          Reservation:
+            - {room_id: "${Room.0.id}", guest_name: Ada Lovelace, guest_email: ada@example.com, check_in: "2026-03-01T15:00:00Z", check_out: "2026-03-03T11:00:00Z"}
+        request: {check_in: "2026-03-02T15:00:00Z", check_out: "2026-03-04T11:00:00Z"}
+        expect: {rooms.#: 1, rooms.0.number: "102"}
+      - name: check_out must be after check_in
+        request: {check_in: "2026-03-04T11:00:00Z", check_out: "2026-03-02T15:00:00Z"}
+        error: INVALID_ARGUMENT
+      - name: a room is free again on the check-out day
+        holdout: true
+        given:
+          Room: [{number: "101", beds: 2}]
+          Reservation:
+            - {room_id: "${Room.0.id}", guest_name: Ada Lovelace, guest_email: ada@example.com, check_in: "2026-03-01T15:00:00Z", check_out: "2026-03-03T11:00:00Z"}
+        request: {check_in: "2026-03-03T11:00:00Z", check_out: "2026-03-05T11:00:00Z"}
+        expect: {rooms.#: 1, rooms.0.number: "101"}
+
+features:
+  otel: true

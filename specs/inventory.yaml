@@ -1,0 +1,92 @@
+name: inventory
+module: github.com/acme/inventory
+package: acme.inventory.v1
+description: Tracks products and how many of each are in stock.
+port: 50051
+
+entities:
+  - name: Product
+    doc: An item the company sells.
+    fields:
+      - {name: sku, type: string, required: true, unique: true, pattern: "^SKU-[0-9]{3,6}$", example: "SKU-001", doc: Stock keeping unit}
+      - {name: title, type: string, required: true, min_len: 2, max_len: 120}
+      - {name: price_cents, type: int64, min: 0, doc: Price in euro cents}
+      - {name: stock, type: int32, min: 0, doc: Units on hand}
+      - {name: tags, type: string, repeated: true}
+      - {name: active, type: bool, doc: Whether the product can be ordered}
+  - name: Warehouse
+    fields:
+      - {name: code, type: string, required: true, unique: true, pattern: "^[A-Z]{3}[0-9]{2}$", example: "BER01"}
+      - {name: city, type: string, required: true, max_len: 80}
+      - {name: capacity, type: int32, min: 1, max: 1000000}
+    ops: [create, get, list]
+
+methods:
+  - name: AdjustStock
+    doc: >-
+      Changes the stock of the product with the given sku by delta (negative to
+      remove units). Returns NOT_FOUND if no product has the sku, and
+      FAILED_PRECONDITION if the result would be below zero. Returns the
+      updated product.
+    request:
+      - {name: sku, type: string}
+      - {name: delta, type: int32}
+    response:
+      - {name: product, type: Product}
+    examples:
+      - name: adds units
+        given:
+          Product: [{sku: SKU-100, title: Widget, stock: 5}]
+        request: {sku: SKU-100, delta: 3}
+        expect: {product.sku: SKU-100, product.stock: 8}
+      - name: can remove every unit
+        given:
+          Product: [{sku: SKU-100, title: Widget, stock: 5}]
+        request: {sku: SKU-100, delta: -5}
+        expect: {product.stock: 0}
+      - name: refuses to go below zero
+        given:
+          Product: [{sku: SKU-100, title: Widget, stock: 5}]
+        request: {sku: SKU-100, delta: -6}
+        error: FAILED_PRECONDITION
+      - name: unknown sku
+        request: {sku: SKU-999, delta: 1}
+        error: NOT_FOUND
+      - name: changes only the product with that sku
+        holdout: true
+        given:
+          Product:
+            - {sku: SKU-100, title: Widget, stock: 1}
+            - {sku: SKU-200, title: Gadget, stock: 10}
+        request: {sku: SKU-200, delta: 2}
+        expect: {product.id: "${Product.1.id}", product.stock: 12}
+  - name: LowStockReport
+    doc: >-
+      Returns all active products whose stock is below threshold, ordered by
+      stock ascending. threshold must be positive (INVALID_ARGUMENT otherwise).
+    request:
+      - {name: threshold, type: int32}
+    response:
+      - {name: products, type: Product, repeated: true}
+    examples:
+      - name: lists active products below the threshold, lowest stock first
+        given:
+          Product:
+            - {sku: SKU-101, title: Bolt, stock: 3, active: true}
+            - {sku: SKU-102, title: Nut, stock: 1, active: true}
+            - {sku: SKU-103, title: Gear, stock: 9, active: true}
+            - {sku: SKU-104, title: Old part, stock: 0, active: false}
+        request: {threshold: 5}
+        expect: {products.#: 2, products.0.sku: SKU-102, products.1.sku: SKU-101}
+      - name: threshold must be positive
+        request: {threshold: 0}
+        error: INVALID_ARGUMENT
+      - name: stock equal to the threshold is not low
+        holdout: true
+        given:
+          Product: [{sku: SKU-105, title: Washer, stock: 5, active: true}]
+        request: {threshold: 5}
+        expect: {products.#: 0}
+
+features:
+  otel: false

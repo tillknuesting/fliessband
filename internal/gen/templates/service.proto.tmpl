@@ -1,0 +1,145 @@
+syntax = "proto3";
+
+package {{.ProtoPackage}};
+{{if .NeedsFieldMask}}
+import "google/protobuf/field_mask.proto";{{end}}{{if .NeedsTimestamp}}
+import "google/protobuf/timestamp.proto";{{end}}
+
+option go_package = "{{.GoPkgPath}};{{.GoPkgName}}";
+
+{{comment "" (or .Description (printf "%s is the %s service." .ServiceName .Name))}}
+service {{.ServiceName}} {
+{{- range .Entities}}
+{{- if .HasCreate}}
+  // Create{{.Name}} creates a {{.Lower}}.
+  rpc Create{{.Name}}(Create{{.Name}}Request) returns (Create{{.Name}}Response);
+{{- end}}
+{{- if .HasGet}}
+  // Get{{.Name}} returns a {{.Lower}} by id.
+  rpc Get{{.Name}}(Get{{.Name}}Request) returns (Get{{.Name}}Response);
+{{- end}}
+{{- if .HasList}}
+  // List{{.Plural}} returns {{.PluralLower}} in creation order, one page at a time.
+  rpc List{{.Plural}}(List{{.Plural}}Request) returns (List{{.Plural}}Response);
+{{- end}}
+{{- if .HasUpdate}}
+  // Update{{.Name}} updates the fields of a {{.Lower}} named in update_mask.
+  rpc Update{{.Name}}(Update{{.Name}}Request) returns (Update{{.Name}}Response);
+{{- end}}
+{{- if .HasDelete}}
+  // Delete{{.Name}} deletes a {{.Lower}}.
+  rpc Delete{{.Name}}(Delete{{.Name}}Request) returns (Delete{{.Name}}Response);
+{{- end}}
+{{- end}}
+{{- range .Methods}}
+{{comment "  " (printf "%s: %s" .Name (or .Doc "custom method."))}}
+  rpc {{.Name}}({{.Name}}Request) returns ({{.Name}}Response);
+{{- end}}
+}
+{{- range .Entities}}
+
+{{comment "" (or .Doc (printf "A %s." .Lower))}}
+message {{.Name}} {
+  // Server-assigned unique identifier.
+  string id = 1;
+{{- range .Fields}}
+{{comment "  " .DocLines}}
+  {{if .Repeated}}repeated {{end}}{{.ProtoType}} {{.Name}} = {{.Number}};
+{{- end}}
+  // Time the {{.Lower}} was created. Set by the server.
+  google.protobuf.Timestamp create_time = {{.CreateNum}};
+  // Time the {{.Lower}} was last updated. Set by the server.
+  google.protobuf.Timestamp update_time = {{.UpdateNum}};
+}
+{{- if .HasCreate}}
+
+// Request message for {{$.ServiceName}}.Create{{.Name}}.
+message Create{{.Name}}Request {
+  // The {{.Lower}} to create. id, create_time and update_time are ignored.
+  {{.Name}} {{.Snake}} = 1;
+}
+
+// Response message for {{$.ServiceName}}.Create{{.Name}}.
+message Create{{.Name}}Response {
+  // The created {{.Lower}}.
+  {{.Name}} {{.Snake}} = 1;
+}
+{{- end}}
+{{- if .HasGet}}
+
+// Request message for {{$.ServiceName}}.Get{{.Name}}.
+message Get{{.Name}}Request {
+  // The id of the {{.Lower}}.
+  string id = 1;
+}
+
+// Response message for {{$.ServiceName}}.Get{{.Name}}.
+message Get{{.Name}}Response {
+  // The requested {{.Lower}}.
+  {{.Name}} {{.Snake}} = 1;
+}
+{{- end}}
+{{- if .HasList}}
+
+// Request message for {{$.ServiceName}}.List{{.Plural}}.
+message List{{.Plural}}Request {
+  // Maximum number of {{.PluralLower}} to return. 0 means the default (50); the maximum is 1000.
+  int32 page_size = 1;
+  // Token from a previous response's next_page_token.
+  string page_token = 2;
+}
+
+// Response message for {{$.ServiceName}}.List{{.Plural}}.
+message List{{.Plural}}Response {
+  // The {{.PluralLower}} on this page.
+  repeated {{.Name}} {{.PluralSnake}} = 1;
+  // Token for the next page, or empty on the last page.
+  string next_page_token = 2;
+}
+{{- end}}
+{{- if .HasUpdate}}
+
+// Request message for {{$.ServiceName}}.Update{{.Name}}.
+message Update{{.Name}}Request {
+  // The {{.Lower}} to update. id selects the record.
+  {{.Name}} {{.Snake}} = 1;
+  // Fields to update. Empty means every mutable field.
+  google.protobuf.FieldMask update_mask = 2;
+}
+
+// Response message for {{$.ServiceName}}.Update{{.Name}}.
+message Update{{.Name}}Response {
+  // The updated {{.Lower}}.
+  {{.Name}} {{.Snake}} = 1;
+}
+{{- end}}
+{{- if .HasDelete}}
+
+// Request message for {{$.ServiceName}}.Delete{{.Name}}.
+message Delete{{.Name}}Request {
+  // The id of the {{.Lower}} to delete.
+  string id = 1;
+}
+
+// Response message for {{$.ServiceName}}.Delete{{.Name}}.
+message Delete{{.Name}}Response {}
+{{- end}}
+{{- end}}
+{{- range .Methods}}
+
+// Request message for {{$.ServiceName}}.{{.Name}}.
+message {{.Name}}Request {
+{{- range .Request}}
+{{comment "  " .DocLines}}
+  {{if .Repeated}}repeated {{end}}{{.ProtoType}} {{.Name}} = {{.Number}};
+{{- end}}
+}
+
+// Response message for {{$.ServiceName}}.{{.Name}}.
+message {{.Name}}Response {
+{{- range .Response}}
+{{comment "  " .DocLines}}
+  {{if .Repeated}}repeated {{end}}{{.ProtoType}} {{.Name}} = {{.Number}};
+{{- end}}
+}
+{{- end}}

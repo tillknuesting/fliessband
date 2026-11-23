@@ -1,0 +1,137 @@
+// Package server assembles the gRPC server: interceptors, TLS, health and reflection.
+package server
+
+import (
+	"context"
+	"crypto/tls"
+	"log/slog"
+	"time"
+
+	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/health"
+	healthpb "google.golang.org/grpc/health/grpc_health_v1"
+	"google.golang.org/grpc/keepalive"
+	"google.golang.org/grpc/reflection"
+
+	pb "{{.GoPkgPath}}"
+)
+
+// LivenessService is the health service name for liveness probes: it
+// reports SERVING for as long as the process runs. The overall ("") and API
+// service names report readiness, which also depends on the store.
+const LivenessService = "liveness"
+
+// Options configure the server. The zero value serves plaintext with no limits.
+type Options struct {
+	TLS              *tls.Config   // nil serves plaintext, e.g. behind a mesh that terminates mTLS
+	RequestTimeout   time.Duration // deadline for calls that arrive without one
+	MaxInFlight      int           // concurrent calls before shedding load; 0 means no limit
+	MaxConnectionAge time.Duration // recycle connections so load balancers can rebalance
+}
+
+// Server is a grpc.Server with its health service.
+type Server struct {
+	*grpc.Server
+	log    *slog.Logger
+	health *health.Server
+}
+
+// New builds the gRPC server and registers the service.
+func New(log *slog.Logger, svc pb.{{.ServiceName}}Server, o Options) *Server {
+	ka := keepalive.ServerParameters{MaxConnectionIdle: 5 * time.Minute, Time: 2 * time.Minute, Timeout: 20 * time.Second}
+	if o.MaxConnectionAge > 0 {
+		ka.MaxConnectionAge = o.MaxConnectionAge
+		ka.MaxConnectionAgeGrace = 30 * time.Second
+	}
+	opts := []grpc.ServerOption{
+		grpc.ChainUnaryInterceptor(Recovery(log), Logging(log), Limit(o.MaxInFlight), Deadline(o.RequestTimeout)),
+		grpc.ChainStreamInterceptor(StreamRecovery(log)),
+		grpc.KeepaliveParams(ka),
+		grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{MinTime: 30 * time.Second, PermitWithoutStream: true}),
+		grpc.MaxRecvMsgSize(4 << 20),
+		grpc.MaxConcurrentStreams(1000),
+{{- if .OTel}}
+		grpc.StatsHandler(otelgrpc.NewServerHandler()),
+{{- end}}
+	}
+	if o.TLS != nil {
+		opts = append(opts, grpc.Creds(credentials.NewTLS(o.TLS)))
+	}
+	gs := grpc.NewServer(opts...)
+	pb.Register{{.ServiceName}}Server(gs, svc)
+	s := &Server{Server: gs, log: log}
+{{- if .Health}}
+	s.health = health.NewServer()
+	healthpb.RegisterHealthServer(gs, s.health)
+	s.setReady(healthpb.HealthCheckResponse_SERVING)
+	s.health.SetServingStatus(LivenessService, healthpb.HealthCheckResponse_SERVING)
+{{- end}}
+{{- if .Reflection}}
+	reflection.Register(gs)
+{{- end}}
+	return s
+}
+{{- if .Health}}
+
+func (s *Server) setReady(st healthpb.HealthCheckResponse_ServingStatus) {
+	s.health.SetServingStatus("", st)
+	s.health.SetServingStatus(pb.{{.ServiceName}}_ServiceDesc.ServiceName, st)
+}
+
+// WatchStore pings the store every interval and reports NOT_SERVING while
+// the ping fails, so readiness probes take the instance out of rotation when
+// its database is unreachable. It returns when ctx is done.
+func (s *Server) WatchStore(ctx context.Context, ping func(context.Context) error, every time.Duration) {
+	ready := true
+	t := time.NewTicker(every)
+	defer t.Stop()
+	for {
+		pctx, cancel := context.WithTimeout(ctx, every)
+		err := ping(pctx)
+		cancel()
+		if ctx.Err() != nil {
+			return
+		}
+		switch {
+		case err != nil && ready:
+			s.log.Error("store unavailable, reporting not ready", "err", err)
+			s.setReady(healthpb.HealthCheckResponse_NOT_SERVING)
+			ready = false
+		case err == nil && !ready:
+			s.log.Info("store available again, reporting ready")
+			s.setReady(healthpb.HealthCheckResponse_SERVING)
+			ready = true
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+	}
+}
+{{- end}}
+
+// Shutdown reports NOT_SERVING, waits drain so load balancers stop sending
+// new calls, then stops gracefully, forcing a stop after timeout.
+func (s *Server) Shutdown(drain, timeout time.Duration) {
+	if s.health != nil {
+		s.health.Shutdown()
+	}
+	if drain > 0 {
+		time.Sleep(drain)
+	}
+	done := make(chan struct{})
+	go func() {
+		s.GracefulStop()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(timeout):
+		s.log.Warn("graceful stop timed out, closing connections", "timeout", timeout.String())
+		s.Stop()
+		<-done
+	}
+}
