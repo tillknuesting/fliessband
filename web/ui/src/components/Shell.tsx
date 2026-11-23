@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Ban, CircleCheck, CircleX, Factory, History as HistoryIcon, LoaderCircle, Moon, Play, Search, Sun, Workflow } from 'lucide-react'
+import { ArrowDownRight, ArrowUpRight, Ban, Boxes, CircleCheck, CircleX, Factory, History as HistoryIcon, LoaderCircle, Moon, Play, Search, Sun, Workflow } from 'lucide-react'
 import { CommandDialog, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList, CommandShortcut } from '@/components/ui/command'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { cn } from '@/lib/utils'
@@ -59,6 +59,18 @@ export function useTheme() {
   return [dark, () => setDark(!dark)] as const
 }
 
+/** Runs grouped by spec name: each name is a product, each run a version. */
+export function productsOf(runs: Summary[]) {
+  const by = new Map<string, Summary[]>()
+  for (const r of runs) by.set(r.name, [...(by.get(r.name) ?? []), r])
+  return [...by.entries()]
+    .map(([name, rs]) => {
+      const scored = rs.filter((r) => r.score != null) // newest first
+      return { name, versions: rs.length, running: rs.filter((r) => r.status === 'running').length, latest: rs[0], trend: scored.length > 1 ? scored[0].score! - scored[1].score! : 0 }
+    })
+    .sort((a, b) => b.latest.created_at.localeCompare(a.latest.created_at))
+}
+
 function NavItem({ href, active, icon: Icon, label, keys }: { href: string; active: boolean; icon: typeof Workflow; label: string; keys: string }) {
   return (
     <a
@@ -78,7 +90,8 @@ function NavItem({ href, active, icon: Icon, label, keys }: { href: string; acti
 }
 
 export function Sidebar(props: {
-  view: 'line' | 'history' | 'floor'
+  view: 'line' | 'history' | 'floor' | 'product'
+  product?: string
   runId: string | null
   runs: Summary[]
   status: FactoryStatus | null
@@ -86,7 +99,8 @@ export function Sidebar(props: {
   onTheme: () => void
   onSearch: () => void
 }) {
-  const { view, runId, runs, status, dark, onTheme, onSearch } = props
+  const { view, product, runId, runs, status, dark, onTheme, onSearch } = props
+  const products = productsOf(runs)
   const found = status?.tools.filter((t) => t.found).length ?? 0
   return (
     <aside className="flex h-screen w-60 shrink-0 flex-col border-r border-sidebar-border bg-sidebar">
@@ -122,10 +136,31 @@ export function Sidebar(props: {
         <NavItem href={runId ? `#/run/${runId}` : '#/'} active={view === 'line'} icon={Workflow} label="Line" keys="G L" />
         <NavItem href="#/history" active={view === 'history'} icon={HistoryIcon} label="History" keys="G H" />
       </nav>
-      <div className="mt-5 flex items-center px-5 pb-1 text-[11.5px] font-medium text-muted-foreground">Recent runs</div>
+      <div className="mt-5 flex items-center px-5 pb-1 text-[11.5px] font-medium text-muted-foreground">Products</div>
+      <ul className="space-y-px px-3">
+        {products.map((p) => (
+          <li key={p.name}>
+            <a
+              href={`#/product/${encodeURIComponent(p.name)}`}
+              aria-current={view === 'product' && product === p.name ? 'page' : undefined}
+              className="flex h-7 items-center gap-2 rounded-md px-2 text-[13px] text-sidebar-foreground transition-colors hover:bg-sidebar-accent aria-[current=page]:bg-sidebar-accent aria-[current=page]:text-sidebar-accent-foreground"
+            >
+              <Boxes className="size-3.5 opacity-60" />
+              <span className="truncate">{p.name}</span>
+              <span className="ml-auto flex shrink-0 items-center gap-1 text-[11.5px] text-muted-foreground tabular-nums">
+                {p.running > 0 && <LoaderCircle className="size-3 animate-spin text-signal" />}
+                {p.trend > 0.5 && <ArrowUpRight className="size-3 text-good" />}
+                {p.trend < -0.5 && <ArrowDownRight className="size-3 text-destructive" />}
+                v{p.versions}
+              </span>
+            </a>
+          </li>
+        ))}
+      </ul>
+      <div className="mt-4 flex items-center px-5 pb-1 text-[11.5px] font-medium text-muted-foreground">Recent runs</div>
       <ol className="min-h-0 flex-1 space-y-px overflow-y-auto px-3 pb-3">
         {runs.slice(0, 40).map((r) => (
-          <li key={r.id}>
+          <li key={r.id} className="animate-in duration-300 fade-in-0 slide-in-from-left-1">
             <a
               href={`#/run/${r.id}`}
               aria-current={view === 'line' && r.id === runId ? 'page' : undefined}

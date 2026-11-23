@@ -88,6 +88,9 @@ type Options struct {
 	MaxRepairs  int      `json:"max_repairs"`
 	MaxMutants  int      `json:"max_mutants,omitempty"`
 	FuzzTime    string   `json:"fuzz_time,omitempty"` // per target, e.g. "3s"
+	// Base is the run this one improves on: its implementation is the
+	// starting point and its measurements tell the model what to fix.
+	Base string `json:"base,omitempty"`
 }
 
 // DefaultOptions turn every check on.
@@ -146,6 +149,7 @@ type Summary struct {
 	Examples    int        `json:"examples"`
 	ExamplesOK  int        `json:"examples_passed"`
 	CostUSD     float64    `json:"cost_usd,omitempty"`
+	Base        string     `json:"base,omitempty"`
 	Stages      []Brief    `json:"stages"`
 }
 
@@ -243,10 +247,17 @@ func (r *Run) save() error {
 }
 
 // Summary builds the history row.
+// Source returns the spec and options the run was started with.
+func (r *Run) Source() (string, Options) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.Spec, r.Options
+}
+
 func (r *Run) Summary() Summary {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	s := Summary{ID: r.ID, Name: r.Name, CreatedAt: r.CreatedAt, FinishedAt: r.FinishedAt, Status: r.Status, LLM: r.Options.LLM}
+	s := Summary{ID: r.ID, Name: r.Name, CreatedAt: r.CreatedAt, FinishedAt: r.FinishedAt, Status: r.Status, LLM: r.Options.LLM, Base: r.Options.Base}
 	s.Stages = make([]Brief, 0, len(r.Stages))
 	for _, st := range r.Stages {
 		b := Brief{ID: st.ID, Status: st.Status, DurationMs: st.DurationMs}

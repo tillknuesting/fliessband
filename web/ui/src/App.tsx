@@ -4,6 +4,7 @@ import { CommandMenu, Kbd, MOD, Sidebar, StatusIcon, useTheme } from '@/componen
 import { PanelLeft, Search } from 'lucide-react'
 import { History } from '@/components/History'
 import { Floor } from '@/components/Floor'
+import { Product } from '@/components/Product'
 import { RunView } from '@/components/RunView'
 import { SignIn } from '@/components/SignIn'
 import { SpecPanel } from '@/components/SpecPanel'
@@ -103,6 +104,11 @@ export default function App() {
 
   useEffect(() => {
     if (route.view === 'history') refreshHistory()
+    if (route.view !== 'product') return
+    // A product page follows its new versions as they run.
+    refreshHistory()
+    const t = setInterval(refreshHistory, 2000)
+    return () => clearInterval(t)
   }, [route.view, refreshHistory])
 
   const pickExample = (name: string) => {
@@ -116,7 +122,7 @@ export default function App() {
   return (
     <TooltipProvider delayDuration={150}>
       <div className="flex h-screen overflow-hidden bg-sidebar">
-        <Sidebar view={route.view} runId={run?.id ?? route.runId} runs={history} status={status} dark={dark} onTheme={toggleTheme} onSearch={() => setPalette(true)} />
+        <Sidebar view={route.view} product={route.product} runId={run?.id ?? route.runId} runs={history} status={status} dark={dark} onTheme={toggleTheme} onSearch={() => setPalette(true)} />
         <div className="flex min-w-0 flex-1 flex-col bg-background md:my-2 md:mr-2 md:rounded-lg md:border">
           <header className="flex h-11 shrink-0 items-center gap-2 border-b px-4 text-[13px]">
             {route.view === 'line' && (
@@ -130,9 +136,15 @@ export default function App() {
               </button>
             )}
             <nav aria-label="Breadcrumb" className="flex min-w-0 items-center gap-1.5 text-muted-foreground">
-              <a href={{ history: '#/history', floor: '#/floor', line: '#/' }[route.view]} className="hover:text-foreground">
-                {{ history: 'History', floor: 'Floor', line: 'Line' }[route.view]}
+              <a href={{ history: '#/history', floor: '#/floor', line: '#/', product: '#/floor' }[route.view]} className="hover:text-foreground">
+                {{ history: 'History', floor: 'Floor', line: 'Line', product: 'Products' }[route.view]}
               </a>
+              {route.view === 'product' && (
+                <>
+                  <span aria-hidden>/</span>
+                  <span className="font-medium text-foreground">{route.product}</span>
+                </>
+              )}
               {route.view === 'line' && run && (
                 <>
                   <span aria-hidden>/</span>
@@ -154,8 +166,10 @@ export default function App() {
               <Kbd>K</Kbd>
             </button>
           </header>
-          <main className="min-h-0 flex-1 overflow-y-auto">
-            {route.view === 'floor' ? (
+          <main className="min-h-0 flex-1 overflow-y-auto [view-transition-name:main]">
+            {route.view === 'product' ? (
+              <Product name={route.product!} runs={history} status={status} />
+            ) : route.view === 'floor' ? (
               <Floor runs={history} status={status} examples={examples} onRuns={setHistory} onStatus={setStatus} />
             ) : route.view === 'history' ? (
               <div className="p-5">
@@ -180,7 +194,7 @@ export default function App() {
                     }}
                   />
                 )}
-                <RunView key={run?.id ?? 'none'} run={run} error={error} validation={validation} />
+                <RunView key={run?.id ?? 'none'} run={run} error={error} validation={validation} runs={history} />
               </div>
             )}
           </main>

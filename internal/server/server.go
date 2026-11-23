@@ -95,6 +95,7 @@ func New(m *pipeline.Manager, cfg Config) (http.Handler, error) {
 	mux.HandleFunc("POST /api/runs", a.auth(a.startRun))
 	mux.HandleFunc("GET /api/runs/{id}", a.auth(a.getRun))
 	mux.HandleFunc("POST /api/runs/{id}/cancel", a.auth(a.cancelRun))
+	mux.HandleFunc("POST /api/runs/{id}/rerun", a.auth(a.rerun))
 	mux.HandleFunc("GET /api/runs/{id}/events", a.auth(a.events))
 	mux.HandleFunc("GET /api/runs/{id}/files", a.auth(a.files))
 	mux.HandleFunc("GET /api/runs/{id}/file", a.auth(a.file))
@@ -450,6 +451,36 @@ func (a *api) startRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.cfg.Log.Info("run started", "run", run.ID, "service", run.Name, "llm", req.Options.LLM)
+	writeJSON(w, http.StatusAccepted, map[string]string{"id": run.ID})
+}
+
+// rerun starts the run's spec again with its options. With improve, the new
+// run starts from this run's implementation and fixes what it measured.
+func (a *api) rerun(w http.ResponseWriter, r *http.Request) {
+	base := a.run(w, r)
+	if base == nil {
+		return
+	}
+	req := struct {
+		Improve bool `json:"improve"`
+	}{}
+	_ = json.NewDecoder(io.LimitReader(r.Body, 1<<10)).Decode(&req)
+	src, opts := base.Source()
+	opts.Base = ""
+	if req.Improve {
+		opts.Base = base.ID
+	}
+	run, err := a.m.Start([]byte(src), opts)
+	switch {
+	case errors.Is(err, pipeline.ErrQueueFull):
+		w.Header().Set("Retry-After", "30")
+		writeErr(w, http.StatusTooManyRequests, err.Error())
+		return
+	case err != nil:
+		writeErr(w, http.StatusServiceUnavailable, err.Error())
+		return
+	}
+	a.cfg.Log.Info("run started", "run", run.ID, "service", run.Name, "base", opts.Base)
 	writeJSON(w, http.StatusAccepted, map[string]string{"id": run.ID})
 }
 

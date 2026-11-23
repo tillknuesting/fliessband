@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Ban, CircleCheck, CircleX, Download, LoaderCircle, Square } from 'lucide-react'
+import { Ban, Boxes, CircleCheck, CircleX, Download, LoaderCircle, RotateCw, Sparkles, Square } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
@@ -7,7 +7,8 @@ import { api } from '@/lib/api'
 import { ms } from '@/lib/format'
 import { LINE } from '@/lib/stages'
 import { cn } from '@/lib/utils'
-import type { Run, Stage, Validation } from '@/lib/types'
+import type { Run, Stage, Summary, Validation } from '@/lib/types'
+import { startRerun, versionsOf } from './Product'
 import { Conveyor, StationDetail, remaining } from './Conveyor'
 import { Blueprint } from './Blueprint'
 import { Measurements } from './Measurements'
@@ -43,7 +44,21 @@ function LineClock({ stages, started }: { stages: Stage[]; started: string }) {
   )
 }
 
-export function RunView({ run, error, validation }: { run: Run | null; error: string | null; validation: Validation | null }) {
+export function RunView({ run, error, validation, runs = [] }: { run: Run | null; error: string | null; validation: Validation | null; runs?: Summary[] }) {
+  const versions = run ? versionsOf(runs, run.name) : []
+  const vn = run ? versions.findIndex((v) => v.id === run.id) + 1 : 0
+  const baseN = run?.options?.base ? versions.findIndex((v) => v.id === run.options.base) + 1 : 0
+  const [rerunning, setRerunning] = useState<string | null>(null)
+  const rerun = async (improve: boolean) => {
+    if (!run) return
+    setRerunning(improve ? 'improve' : 'rerun')
+    try {
+      const { id } = await startRerun(run.id, improve)
+      location.hash = `#/run/${id}`
+    } finally {
+      setRerunning(null)
+    }
+  }
   const [tab, setTab] = useState('service')
   const [selected, setSelected] = useState<string | undefined>()
   const [open, setOpen] = useState<{ path: string; line?: number } | null>(null)
@@ -71,6 +86,12 @@ export function RunView({ run, error, validation }: { run: Run | null; error: st
           {run ? (
             <>
               <h2 className="text-[17px] font-semibold tracking-[-0.015em]">{run.name}</h2>
+              {vn > 0 && (
+                <a href={`#/product/${encodeURIComponent(run.name)}`} className="flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-[12px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground" title="Open the product and compare its versions">
+                  <Boxes className="size-3" /> v{vn} of {versions.length}
+                  {baseN > 0 && <span className="text-signal">, improved from v{baseN}</span>}
+                </a>
+              )}
               {pill && (
                 <Badge variant="outline" className={cn('gap-1', pill.cls)}>
                   <pill.icon className={cn('size-3.5', pill.spin && 'animate-spin')} />
@@ -104,6 +125,12 @@ export function RunView({ run, error, validation }: { run: Run | null; error: st
                   </Button>
                 ) : (
                   <>
+                    <Button variant="outline" size="sm" disabled={!!rerunning} onClick={() => rerun(false)} title="Run the same spec with the same settings again">
+                      <RotateCw className={cn(rerunning === 'rerun' && 'animate-spin')} /> Rerun
+                    </Button>
+                    <Button size="sm" disabled={!!rerunning} onClick={() => rerun(true)} className="bg-signal text-signal-foreground hover:bg-signal/85" title="Start the next version from this one and fix what it measured">
+                      <Sparkles /> Improve
+                    </Button>
                     <Button variant="outline" size="sm" asChild>
                       <a href={`/api/runs/${id}/zip`}>
                         <Download /> Download .zip

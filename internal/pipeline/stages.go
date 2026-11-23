@@ -577,6 +577,11 @@ func (x *executor) stageImplement(ctx context.Context, st *StageState) error {
 	if n == 0 {
 		return skip("no custom RPCs in the spec")
 	}
+	if x.r.Options.Base != "" {
+		if base := x.loadBase(st); base != nil {
+			return x.improve(ctx, st, base)
+		}
+	}
 	if !x.r.Options.LLM {
 		return skip("LLM off: %s left as stubs", fmtCount(n, "custom RPC", "custom RPCs"))
 	}

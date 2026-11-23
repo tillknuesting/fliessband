@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { flushSync } from 'react-dom'
 import { getJSON } from './api'
 import type { Run, Stage } from './types'
 
@@ -66,18 +67,30 @@ export function useRun(id: string | null, onFinished: () => void) {
   return { run, error }
 }
 
-/** Reads the route from the location hash: #/run/<id> or #/history. */
+export type Route = { view: 'line' | 'history' | 'floor' | 'product'; runId: string | null; product?: string }
+
+/** Reads the route from the location hash: #/run/<id>, #/history, #/floor or #/product/<name>. */
 export function useHashRoute() {
-  const read = () => {
+  const read = (): Route => {
     const h = location.hash
-    if (h.startsWith('#/history')) return { view: 'history' as const, runId: null }
-    if (h.startsWith('#/floor')) return { view: 'floor' as const, runId: null }
+    if (h.startsWith('#/history')) return { view: 'history', runId: null }
+    if (h.startsWith('#/floor')) return { view: 'floor', runId: null }
+    const p = h.match(/^#\/product\/(.+)$/)
+    if (p) return { view: 'product', runId: null, product: decodeURIComponent(p[1]) }
     const m = h.match(/^#\/run\/(.+)$/)
-    return { view: 'line' as const, runId: m ? decodeURIComponent(m[1]) : null }
+    return { view: 'line', runId: m ? decodeURIComponent(m[1]) : null }
   }
   const [route, setRoute] = useState(read)
   useEffect(() => {
-    const on = () => setRoute(read())
+    // Moving between views cross-fades where the browser supports view transitions.
+    const on = () => {
+      const next = read()
+      const doc = document as Document & { startViewTransition?: (cb: () => void) => unknown }
+      const calm = window.matchMedia('(prefers-reduced-motion: reduce)').matches
+      if (doc.startViewTransition && !calm && next.view !== route0.view) doc.startViewTransition(() => flushSync(() => setRoute((route0 = next))))
+      else setRoute((route0 = next))
+    }
+    let route0 = read()
     window.addEventListener('hashchange', on)
     return () => window.removeEventListener('hashchange', on)
   }, [])

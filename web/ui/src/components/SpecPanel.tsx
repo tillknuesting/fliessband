@@ -173,7 +173,7 @@ export function SpecPanel(props: Props) {
           <legend className="mb-2 text-sm font-medium">On this run</legend>
           {OPTIONS.map((o) => (
             <div key={o.key} className="flex items-start gap-2">
-              <Checkbox id={`opt-${o.key}`} checked={opts[o.key]} onCheckedChange={(c) => setOpts({ ...opts, [o.key]: c === true })} className="mt-0.5" />
+              <Checkbox id={`opt-${o.key}`} checked={!!opts[o.key]} onCheckedChange={(c) => setOpts({ ...opts, [o.key]: c === true })} className="mt-0.5" />
               <Label htmlFor={`opt-${o.key}`} className="text-[13px] leading-snug font-normal">
                 {o.label}
               </Label>

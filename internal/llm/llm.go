@@ -259,6 +259,17 @@ func (c *Client) Implement(ctx context.Context, model string, in Context) (Resul
 	return c.ask(ctx, model, b.String(), sortedKeys(in.Owned))
 }
 
+// Improve asks the model for a better version of its files, given what the
+// factory measured on the previous version.
+func (c *Client) Improve(ctx context.Context, model string, in Context, feedback string) (Result, error) {
+	var b strings.Builder
+	writeContext(&b, in)
+	fmt.Fprintf(&b, "\n## Task\n\nThe files you own are the previous version of this service's custom RPCs. The factory measured them. "+
+		"Write a better version: fix what the measurements point at, keep what works, and keep every test that still applies.\n\n### Measurements of the previous version\n\n%s\n", truncate(feedback, 12000))
+	b.WriteString(in.MethodBrief)
+	return c.ask(ctx, model, b.String(), sortedKeys(in.Owned))
+}
+
 // Repair asks the model to fix the owned files given a failing tool's output.
 func (c *Client) Repair(ctx context.Context, model string, in Context, stage, output string) (Result, error) {
 	var b strings.Builder

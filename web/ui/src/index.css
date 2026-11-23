@@ -212,6 +212,13 @@
 @keyframes mini { 50% { opacity: 0.45; } }
 .mini-running { animation: mini 1s ease-in-out infinite; }
 
+/* View changes cross-fade; the main pane also lifts slightly. */
+::view-transition-old(root), ::view-transition-new(root) { animation-duration: 160ms; }
+::view-transition-old(main) { animation: 140ms ease-in both vt-out; }
+::view-transition-new(main) { animation: 220ms cubic-bezier(.2,.8,.2,1) both vt-in; }
+@keyframes vt-out { to { opacity: 0; transform: translateY(-4px); } }
+@keyframes vt-in { from { opacity: 0; transform: translateY(6px); } }
+
 /* The service blueprint: wires draw in once, packets flow along lit wires. */
 @keyframes draw { from { stroke-dashoffset: 1; } to { stroke-dashoffset: 0; } }
 .bp-wire-draw { stroke-dasharray: 1; animation: draw 0.6s cubic-bezier(.3,0,.2,1) both; }
