@@ -229,7 +229,8 @@ reflection, request size and stream caps, load shedding, deadlines, bounded
 string inputs, request bodies kept out of logs, a distroless non-root image
 pinned by digest, Kubernetes pod hardening, a least-privilege CI token with
 actions pinned by commit, gosec, a secrets scan, the LLM policy, govulncheck,
-fuzzing, and the SBOM and provenance. Product comparisons list every control
+fuzzing, the SBOM and provenance, and whether the factory ran the generated
+code in a sandbox. Product comparisons list every control
 that changed between two versions.
 
 ## What a generated service gets
@@ -249,8 +250,28 @@ that changed between two versions.
 ## Running it for a team
 
 ```bash
-FLIESSBAND_TOKEN=$(openssl rand -hex 16) ./.tools/fliessband serve -addr 0.0.0.0:7070 -parallel 4 -keep 500
+FLIESSBAND_TOKEN=$(openssl rand -hex 16) FLIESSBAND_SANDBOX=docker \
+  ./.tools/fliessband serve -addr 0.0.0.0:7070 -parallel 4 -keep 500
 ```
+
+- **Sandbox the generated code.** Tests, fuzzing, mutants and the smoke
+  test's server execute code an LLM wrote. With `FLIESSBAND_SANDBOX=docker`
+  (or `-sandbox docker` on `serve` and `run`) each of them runs in a
+  container with no network, a read-only root filesystem, no capabilities, a
+  non-root user and memory, CPU and process limits; only the run's own
+  directories are mounted. It works with Docker or Podman
+  (`FLIESSBAND_SANDBOX_ENGINE=podman`). The image defaults to the official
+  `golang` image of the pinned toolchain (`FLIESSBAND_SANDBOX_IMAGE` to
+  change it; it needs gcc for the race detector, so not the alpine variant);
+  `FLIESSBAND_SANDBOX_RUNTIME=runsc` adds gVisor where installed;
+  `FLIESSBAND_SANDBOX_MEMORY` and `FLIESSBAND_SANDBOX_CPUS` set the limits
+  (4g, 4). The factory refuses to start if the engine does not answer. The
+  default, `none`, runs them as ordinary processes; `serve` warns when it
+  listens beyond localhost that way. `/api/status` and every run's report
+  (`factory.sandbox`) say which mode ran, and the security audit warns when
+  a run was not contained. The first sandboxed run pulls the image and
+  builds the race-enabled standard library into the sandbox cache
+  (`<data>/sandbox`), so it is slower; mutants pay a container start each.
 
 - Fliessband refuses to listen beyond localhost without `FLIESSBAND_TOKEN`.
   The UI asks for it once and keeps an HttpOnly session cookie; API clients
@@ -292,6 +313,7 @@ source.
 | `internal/pipeline` | stations, gates, repair and hardening loops, sandboxing, Docker, smoke test |
 | `internal/policy` | rules for LLM-written files |
 | `internal/mutate` | mutation testing with `go test -overlay` |
+| `internal/sandbox` | container sandbox for steps that execute generated code |
 | `internal/supply` | SBOM and provenance |
 | `internal/metrics` | AST analysis, coverage, tests, score |
 | `internal/llm` | OpenAI-compatible client, prompts, file guardrail |

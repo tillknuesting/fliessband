@@ -156,17 +156,62 @@ Choices:
 
 ## 6. Factory security and operations
 
-The factory runs code that an LLM partly wrote, on its own host. Defences:
+The factory runs code that an LLM partly wrote. Several stations execute it:
+the test station (unit and acceptance tests with the race detector), LLM test
+hardening, tournament candidate tests, mutation testing (`go test -overlay`),
+fuzzing, and the smoke station, which starts the built server. Compiling
+(build, vet, lint, `go fix`, govulncheck, buf) does not execute it; `go
+generate` would, and the policy forbids its directives. The dependency station
+needs the network and executes nothing generated.
+
+**Sandbox.** `FLIESSBAND_SANDBOX` (or `-sandbox`) selects where those steps run:
+
+- `none` (default): ordinary child processes on the host. Every run's report
+  records it (`report.factory.sandbox`), and the security audit warns.
+  `fliessband serve` logs a warning when it listens beyond localhost like this.
+- `docker` (the Docker or Podman CLI): every `go test`, `go run` and
+  `go generate`, and every mutant, runs in a fresh container from
+  `FLIESSBAND_SANDBOX_IMAGE` (default: the official `golang` image of the
+  toolchain generated modules pin), with `--network none`, a read-only root
+  filesystem, a writable `exec` tmpfs at `/tmp`, `--cap-drop ALL`,
+  `no-new-privileges`, the host's uid:gid instead of root, memory (4 GB, no
+  extra swap), CPU (4) and process (1024) limits, and `--init`. Only the run
+  directory (read-only: overlays and tournament candidates live there), the
+  service directory (read-write), coverage files, the factory's own module
+  cache (read-only) and a sandbox-only build cache are mounted, at the same
+  paths as on the host. When a step times out or a run is canceled, the
+  container is removed, not just the CLI. `FLIESSBAND_SANDBOX_RUNTIME=runsc`
+  adds gVisor where it is installed. The factory checks the engine at startup
+  and refuses to start rather than fall back to the host.
+- The smoke station cross-compiles the server for the engine's Linux host
+  and runs it in such a container, also without a network. The client reaches
+  it through a small relay mounted read-only into the container and started
+  with `docker exec -i` per connection, so no port is published. Startup
+  times and latencies then include the relay. With PostgreSQL, the server
+  container joins an `--internal` network that holds only the database.
+- The PostgreSQL integration tests stay on the host: they must reach the
+  database, and they build only the store package, which the templates own
+  and which does not link the LLM's code.
 
 | Threat | Defence |
 |---|---|
-| Generated code reads credentials | Child processes get an allowlisted environment: no API keys, tokens or cloud credentials (tested) |
-| Generated code reaches the network or other programs | The policy rejects imports outside an allowlist (no `os`, `net`, `os/exec`, `unsafe`, cgo) before anything compiles; after the dependency stage Go runs with `GOPROXY=off` |
-| Runaway tests or servers | Every command has a timeout and runs in its own process group, which is killed as a whole |
+| Generated code reads credentials | Child processes get an allowlisted environment: no API keys, tokens or cloud credentials (tested). In the sandbox the environment is built from scratch and only the run's own directories are mounted |
+| Generated code reaches the network or other programs | The policy rejects imports outside an allowlist (no `os`, `net`, `os/exec`, `unsafe`, cgo) before anything compiles; after the dependency stage Go runs with `GOPROXY=off`. In the sandbox every execution step has `--network none` |
+| Generated code escapes the policy (a bug in the checker, a standard library path to the file system) | The docker sandbox: no network, read-only root, no capabilities, non-root, resource limits; gVisor when configured. Without it, such code runs with the factory user's rights |
+| Generated code poisons later builds | Execution steps get their own build cache; the module cache is mounted read-only; host builds never read what the container wrote |
+| Runaway tests or servers | Every command has a timeout and runs in its own process group, which is killed as a whole; in the sandbox the container is removed and memory, CPU and processes are capped |
 | The model edits its judge | Write set limited to two files; the acceptance tests are hidden from it |
 | A web page drives the local factory (CSRF, DNS rebinding) | `http.CrossOriginProtection`, Host allowlist on loopback, strict CSP, no third-party assets |
 | Exposure beyond localhost | `fliessband serve` refuses non-loopback addresses without `FLIESSBAND_TOKEN`; bearer token or HttpOnly SameSite cookie; slowed failed sign-ins |
 | Registry credentials | Docker runs with an isolated client config; only public images are pulled |
+
+Limits of the sandbox: containers share the host kernel unless gVisor is
+used; the sandbox build cache is shared by all runs, so one run's code could
+plant entries a later run's tests read (not host builds); a factory killed
+with SIGKILL leaves its containers running until they finish (they carry the
+label `fliessband.run=<id>`); the default image is pinned by tag, not
+digest; and the Podman path and the PostgreSQL smoke network are written
+for, but were not exercised against, a real engine in this version's tests.
 
 Operations: `/healthz`, Prometheus `/metrics` (runs, stage durations and
 failures, tokens), JSON logs, a bounded queue (429 with `Retry-After`), run
@@ -213,5 +258,6 @@ comparable. A failed gate caps the score at 40.
   repair, kept only if every gate still passes.
 - Merging tests from losing candidates that pass on the winner into its test
   file, so their extra cases are not lost.
-- Container sandboxing for test runs (gVisor or similar) on shared factories.
+- A per-run build cache (or a read-only shared one) for the sandbox, and
+  removal of containers left behind by a killed factory.
 - Signed provenance and SBOMs; image builds in the line.
