@@ -2,6 +2,8 @@ module github.com/tillknuesting/fliessband
 
 go 1.27.0
 
+toolchain go1.27.4
+
 require (
 	golang.org/x/net v0.60.0 // indirect
 	golang.org/x/sys v0.48.0 // indirect
