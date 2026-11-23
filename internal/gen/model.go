@@ -42,6 +42,7 @@ type Model struct {
 	CI              bool
 	LockKey         int64           // advisory lock id for migrations
 	PGHelpers       map[string]bool // conversion helpers the Postgres store needs
+	Auth            *AuthModel      // nil when the spec has no auth block
 }
 
 // EntityModel is an entity with derived names and test data.
@@ -167,6 +168,7 @@ func NewModel(s *spec.Spec) *Model {
 		m.Entities = append(m.Entities, em)
 	}
 	m.Examples = newExamples(s)
+	m.Auth = newAuth(s, m.FullServiceName)
 	for _, sm := range s.Methods {
 		mm := &MethodModel{Name: sm.Name, Doc: strings.TrimSpace(sm.Doc)}
 		for i, f := range sm.Request {

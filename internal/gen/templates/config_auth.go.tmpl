@@ -1,0 +1,60 @@
+package config
+
+import (
+	"net/url"
+	"time"
+)
+
+// AuthConfig configures bearer token verification. The defaults come from
+// the spec's auth block.
+type AuthConfig struct {
+	// Issuer must match the token's iss claim (AUTH_ISSUER).
+	Issuer string
+	// Audience must be in the token's aud claim (AUTH_AUDIENCE).
+	Audience string
+	// JWKSURL is the identity provider's JSON Web Key Set (AUTH_JWKS_URL).
+	// It must be https; plain http is accepted for localhost only.
+	JWKSURL string
+	// JWKSRefresh is how often the key set is fetched again
+	// (AUTH_JWKS_REFRESH, default 1h, at least 1m). Unknown key ids also
+	// trigger a fetch, at most every 30s.
+	JWKSRefresh time.Duration
+	// Leeway allows for clock skew when checking exp and nbf (AUTH_LEEWAY,
+	// default 30s, at most 5m).
+	Leeway time.Duration
+}
+
+func (p *parser) auth() AuthConfig {
+	c := AuthConfig{
+		Issuer:      {{printf "%q" .Auth.Issuer}},
+		Audience:    {{printf "%q" .Auth.Audience}},
+		JWKSURL:     {{printf "%q" .Auth.JWKSURL}},
+		JWKSRefresh: time.Hour,
+		Leeway:      30 * time.Second,
+	}
+	p.str("AUTH_ISSUER", &c.Issuer)
+	p.str("AUTH_AUDIENCE", &c.Audience)
+	p.str("AUTH_JWKS_URL", &c.JWKSURL)
+	p.duration("AUTH_JWKS_REFRESH", &c.JWKSRefresh)
+	p.duration("AUTH_LEEWAY", &c.Leeway)
+	p.require(secureURL(c.JWKSURL), "AUTH_JWKS_URL must be an https URL (http only for localhost)")
+	p.require(c.JWKSRefresh >= time.Minute, "AUTH_JWKS_REFRESH must be at least 1m")
+	p.require(c.Leeway <= 5*time.Minute, "AUTH_LEEWAY must be at most 5m")
+	return c
+}
+
+// secureURL reports whether keys fetched from u cannot be swapped on the way.
+func secureURL(u string) bool {
+	parsed, err := url.Parse(u)
+	if err != nil || parsed.Host == "" {
+		return false
+	}
+	switch parsed.Scheme {
+	case "https":
+		return true
+	case "http":
+		h := parsed.Hostname()
+		return h == "localhost" || h == "127.0.0.1" || h == "::1"
+	}
+	return false
+}

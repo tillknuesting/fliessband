@@ -505,7 +505,7 @@ func (x *executor) llmContext() (llm.Context, error) {
 			in.Owned[f.Path], err = read(f.Path)
 		case f.Path == "internal/service/acceptance_test.go":
 			// The judge stays hidden: the brief carries the visible examples.
-		case strings.HasPrefix(f.Path, "internal/service/") || f.Path == "internal/store/store.go":
+		case strings.HasPrefix(f.Path, "internal/service/") || f.Path == "internal/store/store.go" || f.Path == "internal/auth/principal.go":
 			in.Files[f.Path], err = read(f.Path)
 		}
 		if err != nil {

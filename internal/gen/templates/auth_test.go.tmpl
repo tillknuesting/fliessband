@@ -1,0 +1,563 @@
+package auth
+
+import (
+	"bytes"
+	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/base64"
+	"encoding/json"
+	"fmt"
+	"log/slog"
+	"math/big"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"os"
+	"runtime/pprof"
+	"slices"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/golang-jwt/jwt/v5"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/peer"
+	"google.golang.org/grpc/status"
+
+	pb "{{.GoPkgPath}}"
+)
+
+var discard = slog.New(slog.DiscardHandler)
+{{template "leakcheck"}}
+// peerContext returns a context whose peer presented the given verified
+// certificate chain, as gRPC reports a client certificate after mTLS.
+func peerContext(ctx context.Context, chain ...*x509.Certificate) context.Context {
+	var chains [][]*x509.Certificate
+	if len(chain) > 0 {
+		chains = [][]*x509.Certificate{chain}
+	}
+	return peer.NewContext(ctx, &peer.Peer{AuthInfo: credentials.TLSInfo{State: tls.ConnectionState{VerifiedChains: chains}}})
+}
+
+func spiffeCert() *x509.Certificate {
+	return &x509.Certificate{
+		Subject: pkix.Name{CommonName: "billing"},
+		URIs:    []*url.URL{ {Scheme: "spiffe", Host: "example.org", Path: "/billing"} },
+	}
+}
+
+func TestMTLSIdentity(t *testing.T) {
+	on := New(t.Context(), Config{MTLSIdentity: true}, discard)
+	off := New(t.Context(), Config{}, discard)
+	tests := []struct {
+		name string
+		a    *Authorizer
+		ctx  context.Context
+		want string // subject, "" for anonymous
+	}{
+		{"URI SAN wins", on, peerContext(t.Context(), spiffeCert()), "spiffe://example.org/billing"},
+		{"common name", on, peerContext(t.Context(), &x509.Certificate{Subject: pkix.Name{CommonName: "billing"} }), "billing"},
+		{"no name", on, peerContext(t.Context(), &x509.Certificate{}), ""},
+		{"no verified chain", on, peerContext(t.Context()), ""},
+		{"no peer", on, t.Context(), ""},
+		{"switched off", off, peerContext(t.Context(), spiffeCert()), ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p, err := tt.a.authenticate(tt.ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			switch {
+			case tt.want == "" && p != nil:
+				t.Fatalf("got principal %+v, want anonymous", p)
+			case tt.want != "" && (p == nil || p.Subject != tt.want || p.Source != "mtls" || len(p.Roles) != 0):
+				t.Fatalf("got %+v, want subject %q from mtls without roles", p, tt.want)
+			}
+		})
+	}
+}
+
+func TestPrincipal(t *testing.T) {
+	var none *Principal
+	if none.HasRole("x") || none.HasAnyRole("x") {
+		t.Error("a nil principal has no roles")
+	}
+	p := &Principal{Subject: "u", Roles: []string{"a", "b"} }
+	if !p.HasRole("b") || p.HasRole("c") || !p.HasAnyRole("c", "a") || p.HasAnyRole("c", "d") || p.HasAnyRole() {
+		t.Errorf("role checks wrong for %+v", p)
+	}
+	if _, ok := FromContext(t.Context()); ok {
+		t.Error("an empty context has no principal")
+	}
+	if _, ok := FromContext(NewContext(t.Context(), nil)); ok {
+		t.Error("a nil principal is no principal")
+	}
+	if got, ok := FromContext(NewContext(t.Context(), p)); !ok || got != p {
+		t.Errorf("FromContext = %v, %v", got, ok)
+	}
+}
+
+func TestRuleNames(t *testing.T) {
+	for r, want := range map[*Rule]string{&Public: "public", &Authenticated: "authenticated", &Deny: "deny"} {
+		if got := r.String(); got != want {
+			t.Errorf("%v.String() = %q, want %q", *r, got, want)
+		}
+	}
+	if got := Roles("a", "b").String(); got != "roles a, b" {
+		t.Errorf("Roles(a, b) = %q", got)
+	}
+	if (Rule{}).String() != "authenticated" {
+		t.Error("the zero rule must be authenticated, so a missing rule fails closed")
+	}
+}
+
+// TestEveryRPCHasARule keeps the rule table and the API in step.
+func TestEveryRPCHasARule(t *testing.T) {
+	sd := pb.{{.ServiceName}}_ServiceDesc
+	for _, m := range sd.Methods {
+		if _, ok := Rules["/"+sd.ServiceName+"/"+m.MethodName]; !ok {
+			t.Errorf("%s has no access rule", m.MethodName)
+		}
+	}
+	if len(Rules) != len(sd.Methods)+len(sd.Streams) {
+		t.Errorf("%d rules for %d RPCs", len(Rules), len(sd.Methods)+len(sd.Streams))
+	}
+	if got := RuleFor("/other.v1.Other/Call").String(); got != DefaultRule.String() {
+		t.Errorf("unknown method gets %s, want the default %s", got, DefaultRule)
+	}
+	for _, m := range []string{"/grpc.health.v1.Health/Check", "/grpc.health.v1.Health/Watch",
+		"/grpc.reflection.v1.ServerReflection/ServerReflectionInfo", "/grpc.reflection.v1alpha.ServerReflection/ServerReflectionInfo"} {
+		if got := RuleFor(m).String(); got != "public" {
+			t.Errorf("%s is %s, want public", m, got)
+		}
+	}
+}
+
+type fakeStream struct {
+	grpc.ServerStream
+	ctx context.Context
+}
+
+func (f fakeStream) Context() context.Context { return f.ctx }
+
+// call runs the unary interceptor for method and returns the code and the
+// principal the handler saw.
+func call(ctx context.Context, a *Authorizer, method string) (codes.Code, *Principal) {
+	var got *Principal
+	_, err := a.Unary()(ctx, nil, &grpc.UnaryServerInfo{FullMethod: method}, func(ctx context.Context, _ any) (any, error) {
+		got, _ = FromContext(ctx)
+		return nil, nil
+	})
+	return status.Code(err), got
+}
+
+// stream runs the stream interceptor for method.
+func stream(ctx context.Context, a *Authorizer, method string) (codes.Code, *Principal) {
+	var got *Principal
+	err := a.Stream()(nil, fakeStream{ctx: ctx}, &grpc.StreamServerInfo{FullMethod: method}, func(_ any, ss grpc.ServerStream) error {
+		got, _ = FromContext(ss.Context())
+		return nil
+	})
+	return status.Code(err), got
+}
+
+func TestNilAuthorizerFailsClosed(t *testing.T) {
+	var a *Authorizer
+	if code, _ := call(t.Context(), a, "/grpc.health.v1.Health/Check"); code != codes.OK {
+		t.Errorf("health through a nil authorizer: %v", code)
+	}
+	for method, rule := range Rules {
+		if rule.kind == kindPublic {
+			continue
+		}
+		if code, _ := call(t.Context(), a, method); code == codes.OK {
+			t.Errorf("%s (%s) is open through a nil authorizer", method, rule)
+		}
+	}
+	if code, _ := stream(t.Context(), a, "/grpc.reflection.v1.ServerReflection/ServerReflectionInfo"); code != codes.OK {
+		t.Errorf("reflection through a nil authorizer: %v", code)
+	}
+}
+
+func TestBadAuthorizationHeaders(t *testing.T) {
+	a := New(t.Context(), Config{MTLSIdentity: true}, discard)
+	for name, vals := range map[string][]string{
+		"basic scheme": {"Basic dXNlcg=="},
+		"no scheme":    {"abc"},
+		"empty bearer": {"Bearer "},
+		"two headers":  {"Bearer a", "Bearer b"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			ctx := metadata.NewIncomingContext(peerContext(t.Context(), spiffeCert()), metadata.MD{"authorization": vals})
+			if _, err := a.authenticate(ctx); status.Code(err) != codes.Unauthenticated {
+				t.Fatalf("got %v, want Unauthenticated; bad credentials must never fall back to the certificate", err)
+			}
+		})
+	}
+}
+{{- if .Auth.JWT}}
+
+const (
+	testIssuer   = "https://idp.test"
+	testAudience = "{{.Name}}-test"
+)
+
+var (
+	testECKey  = sync.OnceValue(func() *ecdsa.PrivateKey { return mustEC() })
+	testRSAKey = sync.OnceValue(func() *rsa.PrivateKey {
+		k, err := rsa.GenerateKey(rand.Reader, 2048)
+		if err != nil {
+			panic(err)
+		}
+		return k
+	})
+)
+
+func mustEC() *ecdsa.PrivateKey {
+	k, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		panic(err)
+	}
+	return k
+}
+
+// testIDP is an identity provider for tests: it signs tokens and serves
+// its public keys as a JWKS over HTTP, like a real one.
+type testIDP struct {
+	mu     sync.Mutex
+	keys   map[string]any // key id -> *ecdsa.PrivateKey or *rsa.PrivateKey
+	broken bool
+	srv    *httptest.Server
+}
+
+func newIDP(t *testing.T) *testIDP {
+	t.Helper()
+	idp := &testIDP{keys: map[string]any{"ec-1": testECKey(), "rsa-1": testRSAKey()} }
+	idp.srv = httptest.NewServer(http.HandlerFunc(idp.serveJWKS))
+	t.Cleanup(idp.srv.Close)
+	return idp
+}
+
+func (idp *testIDP) addKey(kid string, key any) {
+	idp.mu.Lock()
+	defer idp.mu.Unlock()
+	idp.keys[kid] = key
+}
+
+func b64(b []byte) string { return base64.RawURLEncoding.EncodeToString(b) }
+
+func (idp *testIDP) serveJWKS(w http.ResponseWriter, _ *http.Request) {
+	idp.mu.Lock()
+	defer idp.mu.Unlock()
+	if idp.broken {
+		http.Error(w, "down", http.StatusInternalServerError)
+		return
+	}
+	var keys []map[string]string
+	for kid, k := range idp.keys {
+		switch k := k.(type) {
+		case *ecdsa.PrivateKey:
+			raw, err := k.PublicKey.Bytes()
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			keys = append(keys, map[string]string{"kty": "EC", "crv": "P-256", "alg": "ES256", "use": "sig", "kid": kid,
+				"x": b64(raw[1:33]), "y": b64(raw[33:65])})
+		case *rsa.PrivateKey:
+			keys = append(keys, map[string]string{"kty": "RSA", "alg": "RS256", "use": "sig", "kid": kid,
+				"n": b64(k.N.Bytes()), "e": b64(big.NewInt(int64(k.E)).Bytes())})
+		}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{"keys": keys})
+}
+
+// claims returns valid claims for a caller with roles; tests change them.
+func claims(roles []string) jwt.MapClaims {
+	now := time.Now()
+	c := jwt.MapClaims{"iss": testIssuer, "aud": testAudience, "sub": "user-1",
+		"iat": now.Unix(), "nbf": now.Add(-time.Minute).Unix(), "exp": now.Add(5 * time.Minute).Unix()}
+	// RolesClaim may be a dotted path into nested objects.
+	parts := strings.Split(RolesClaim, ".")
+	m := map[string]any(c)
+	for _, p := range parts[:len(parts)-1] {
+		next := map[string]any{}
+		m[p] = next
+		m = next
+	}
+	if roles != nil {
+		m[parts[len(parts)-1]] = roles
+	}
+	return c
+}
+
+// sign signs claims with the key kid of the provider.
+func sign(t *testing.T, key any, kid string, c jwt.MapClaims) string {
+	t.Helper()
+	method := jwt.SigningMethod(jwt.SigningMethodES256)
+	if _, ok := key.(*rsa.PrivateKey); ok {
+		method = jwt.SigningMethodRS256
+	}
+	tok := jwt.NewWithClaims(method, c)
+	tok.Header["kid"] = kid
+	s, err := tok.SignedString(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return s
+}
+
+func (idp *testIDP) token(t *testing.T, kid string, c jwt.MapClaims) string {
+	t.Helper()
+	idp.mu.Lock()
+	key := idp.keys[kid]
+	idp.mu.Unlock()
+	return sign(t, key, kid, c)
+}
+
+// authorizer fetches the provider's key set like production does and waits
+// until it has.
+func authorizer(t *testing.T, idp *testIDP) *Authorizer {
+	t.Helper()
+	a := New(t.Context(), Config{Issuer: testIssuer, Audience: testAudience, JWKSURL: idp.srv.URL, Leeway: 30 * time.Second, Refresh: time.Hour}, discard)
+	deadline := time.Now().Add(10 * time.Second)
+	for !a.Ready() {
+		if time.Now().After(deadline) {
+			t.Fatal("the key set never loaded")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	return a
+}
+
+func bearer(ctx context.Context, tok string) context.Context {
+	return metadata.NewIncomingContext(ctx, metadata.Pairs("authorization", "Bearer "+tok))
+}
+
+// credentials returns ctx carrying a valid token for a caller with roles.
+func withCredentials(t *testing.T, ctx context.Context, idp *testIDP, roles []string) context.Context {
+	t.Helper()
+	return bearer(ctx, idp.token(t, "ec-1", claims(roles)))
+}
+
+func TestVerifyTokens(t *testing.T) {
+	idp := newIDP(t)
+	a := authorizer(t, idp)
+	roles := []string{"r1", "r2"}
+	with := func(change func(jwt.MapClaims)) jwt.MapClaims {
+		c := claims(roles)
+		change(c)
+		return c
+	}
+	hs := jwt.NewWithClaims(jwt.SigningMethodHS256, claims(roles))
+	hs.Header["kid"] = "ec-1"
+	hsToken, err := hs.SignedString([]byte("shared-key-material-for-the-test"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	noneToken, err := jwt.NewWithClaims(jwt.SigningMethodNone, claims(roles)).SignedString(jwt.UnsafeAllowNoneSignatureType)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	tests := []struct {
+		name string
+		tok  string
+		want codes.Code
+	}{
+		{"ES256 token", idp.token(t, "ec-1", claims(roles)), codes.OK},
+		{"RS256 token", idp.token(t, "rsa-1", claims(roles)), codes.OK},
+		{"expired", idp.token(t, "ec-1", with(func(c jwt.MapClaims) { c["exp"] = now.Add(-2 * time.Minute).Unix() })), codes.Unauthenticated},
+		{"expired within the leeway", idp.token(t, "ec-1", with(func(c jwt.MapClaims) { c["exp"] = now.Add(-10 * time.Second).Unix() })), codes.OK},
+		{"not valid yet", idp.token(t, "ec-1", with(func(c jwt.MapClaims) { c["nbf"] = now.Add(5 * time.Minute).Unix() })), codes.Unauthenticated},
+		{"wrong audience", idp.token(t, "ec-1", with(func(c jwt.MapClaims) { c["aud"] = "another-service" })), codes.Unauthenticated},
+		{"audience in a list", idp.token(t, "ec-1", with(func(c jwt.MapClaims) { c["aud"] = []string{"another-service", testAudience} })), codes.OK},
+		{"wrong issuer", idp.token(t, "ec-1", with(func(c jwt.MapClaims) { c["iss"] = "https://evil.test" })), codes.Unauthenticated},
+		{"no expiry", idp.token(t, "ec-1", with(func(c jwt.MapClaims) { delete(c, "exp") })), codes.Unauthenticated},
+		{"no subject", idp.token(t, "ec-1", with(func(c jwt.MapClaims) { delete(c, "sub") })), codes.Unauthenticated},
+		{"shared-secret algorithm", hsToken, codes.Unauthenticated},
+		{"unsigned", noneToken, codes.Unauthenticated},
+		{"signed by another key", sign(t, mustEC(), "ec-1", claims(roles)), codes.Unauthenticated},
+		{"unknown key id", sign(t, testECKey(), "unknown", claims(roles)), codes.Unauthenticated},
+		{"malformed", "not-a-jwt", codes.Unauthenticated},
+		{"too large", strings.Repeat("a", maxJWTBytes+1), codes.Unauthenticated},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p, err := a.authenticate(bearer(t.Context(), tt.tok))
+			if got := status.Code(err); got != tt.want {
+				t.Fatalf("got %v (%v), want %v", got, err, tt.want)
+			}
+			if err != nil {
+				if strings.Contains(status.Convert(err).Message(), tt.tok) {
+					t.Error("the error echoes the token")
+				}
+				return
+			}
+			if p.Subject != "user-1" || p.Source != "jwt" || !slices.Equal(p.Roles, roles) {
+				t.Errorf("principal = %+v, want user-1 with %v", p, roles)
+			}
+		})
+	}
+	for n, tooLarge := range map[int]bool{maxJWTBytes: false, maxJWTBytes + 1: true} {
+		_, err := a.authenticate(bearer(t.Context(), strings.Repeat("a", n)))
+		if got := strings.Contains(status.Convert(err).Message(), "too large"); got != tooLarge {
+			t.Errorf("token of %d bytes: %v, want too large = %v", n, err, tooLarge)
+		}
+	}
+	if code, _ := call(metadata.NewIncomingContext(t.Context(), metadata.MD{}), a, "/grpc.health.v1.Health/Check"); code != codes.OK {
+		t.Errorf("health without a token: %v", code)
+	}
+}
+
+func TestReasons(t *testing.T) {
+	for err, want := range map[error]string{
+		jwt.ErrTokenExpired: "expired", jwt.ErrTokenNotValidYet: "not valid yet", jwt.ErrTokenUsedBeforeIssued: "not valid yet",
+		jwt.ErrTokenInvalidAudience: "wrong audience", jwt.ErrTokenInvalidIssuer: "wrong issuer",
+		jwt.ErrTokenRequiredClaimMissing: "a required claim is missing", jwt.ErrTokenMalformed: "malformed",
+		jwt.ErrTokenSignatureInvalid: "signature not verified", jwt.ErrTokenUnverifiable: "signature not verified",
+		fmt.Errorf("other"): "rejected",
+	} {
+		if got := reason(fmt.Errorf("wrapped: %w", err)); got != want {
+			t.Errorf("reason(%v) = %q, want %q", err, got, want)
+		}
+	}
+}
+
+func TestRolesFrom(t *testing.T) {
+	tests := []struct {
+		name   string
+		claims jwt.MapClaims
+		path   string
+		want   []string
+	}{
+		{"list", jwt.MapClaims{"roles": []any{"a", "b"} }, "roles", []string{"a", "b"} },
+		{"nested", jwt.MapClaims{"realm": map[string]any{"roles": []any{"a", 1, ""} } }, "realm.roles", []string{"a"} },
+		{"space separated", jwt.MapClaims{"scope": "read  write"}, "scope", []string{"read", "write"} },
+		{"missing", jwt.MapClaims{}, "roles", nil},
+		{"not an object", jwt.MapClaims{"realm": "x"}, "realm.roles", nil},
+		{"wrong type", jwt.MapClaims{"roles": 3.0}, "roles", nil},
+	}
+	for _, tt := range tests {
+		if got := rolesFrom(tt.claims, tt.path); !slices.Equal(got, tt.want) {
+			t.Errorf("%s: got %q, want %q", tt.name, got, tt.want)
+		}
+	}
+}
+
+// TestKeyRotation checks that a token signed with a key the cache has not
+// seen makes the authorizer fetch the key set again.
+func TestKeyRotation(t *testing.T) {
+	idp := newIDP(t)
+	a := authorizer(t, idp)
+	idp.addKey("ec-2", mustEC())
+	if _, err := a.authenticate(bearer(t.Context(), idp.token(t, "ec-2", claims(nil)))); err != nil {
+		t.Fatalf("token with a rotated key: %v", err)
+	}
+}
+
+func TestKeySetUnavailable(t *testing.T) {
+	idp := newIDP(t)
+	idp.broken = true
+	a := authorizer(t, idp)
+	if _, err := a.authenticate(bearer(t.Context(), idp.token(t, "ec-1", claims(nil)))); status.Code(err) != codes.Unauthenticated {
+		t.Fatalf("got %v, want Unauthenticated while no keys are known", err)
+	}
+	none := New(t.Context(), Config{Issuer: testIssuer, Audience: testAudience}, discard)
+	if none.Ready() {
+		t.Error("an authorizer without keys is not ready")
+	}
+	if _, err := none.authenticate(bearer(t.Context(), idp.token(t, "ec-1", claims(nil)))); status.Code(err) != codes.Unavailable {
+		t.Fatalf("got %v, want Unavailable before the keys arrive", err)
+	}
+	fixed := New(t.Context(), Config{Issuer: testIssuer, Audience: testAudience, Keyfunc: func(*jwt.Token) (any, error) { return &testECKey().PublicKey, nil } }, discard)
+	if !fixed.Ready() {
+		t.Error("an authorizer with fixed keys is ready at once")
+	}
+	if _, err := fixed.authenticate(bearer(t.Context(), idp.token(t, "ec-1", claims(nil)))); err != nil {
+		t.Fatalf("fixed keys: %v", err)
+	}
+}
+{{- else}}
+
+// withCredentials returns ctx whose peer presented a verified client
+// certificate. Certificate identities carry no roles.
+func withCredentials(t *testing.T, ctx context.Context, _ any, _ []string) context.Context {
+	t.Helper()
+	return peerContext(ctx, spiffeCert())
+}
+{{- end}}
+
+// TestRules checks every RPC against every kind of caller. The expected
+// codes were derived from the spec by the generator, not from Rules.
+func TestRules(t *testing.T) {
+{{- if .Auth.JWT}}
+	idp := newIDP(t)
+	a := authorizer(t, idp)
+	a.cfg.MTLSIdentity = MTLSIdentity
+{{- else}}
+	var idp any
+	a := New(t.Context(), Config{MTLSIdentity: true}, discard)
+{{- end}}
+	tests := []struct {
+		method, caller string
+		creds          bool
+		roles          []string
+		want           codes.Code
+	}{
+{{- range .Auth.Cases}}
+		{ {{- printf "%q" .Method}}, {{printf "%q" .Caller}}, {{.Token}}, {{.Roles}}, {{.Code -}} },
+{{- end}}
+	}
+	for _, tt := range tests {
+		t.Run(tt.method+"/"+tt.caller, func(t *testing.T) {
+			ctx := t.Context()
+			if tt.creds {
+				ctx = withCredentials(t, ctx, idp, tt.roles)
+			}
+			code, p := call(ctx, a, tt.method)
+			if code != tt.want {
+				t.Fatalf("got %v, want %v", code, tt.want)
+			}
+			switch {
+			case code == codes.OK && tt.creds && p == nil:
+				t.Error("the handler did not get the caller")
+			case !tt.creds && p != nil:
+				t.Errorf("an anonymous call reached the handler as %+v", p)
+			}
+		})
+	}
+}
+
+func TestStreamInterceptor(t *testing.T) {
+{{- if .Auth.JWT}}
+	idp := newIDP(t)
+	a := authorizer(t, idp)
+{{- else}}
+	var idp any
+	a := New(t.Context(), Config{MTLSIdentity: true}, discard)
+{{- end}}
+	const method = "/other.v1.Other/Stream" // not in Rules: the default applies
+	if code, p := stream(t.Context(), a, method); code != {{if eq .Auth.DefaultKind "deny"}}codes.PermissionDenied{{else if eq .Auth.DefaultKind "public"}}codes.OK{{else}}codes.Unauthenticated{{end}} || p != nil {
+		t.Errorf("anonymous stream: %v, %+v", code, p)
+	}
+	code, p := stream(withCredentials(t, t.Context(), idp, nil), a, method)
+	if code != {{if eq .Auth.DefaultKind "deny"}}codes.PermissionDenied{{else}}codes.OK{{end}} {
+		t.Fatalf("stream with credentials: %v", code)
+	}
+	if code == codes.OK && p == nil {
+		t.Error("the stream handler did not get the caller")
+	}
+}

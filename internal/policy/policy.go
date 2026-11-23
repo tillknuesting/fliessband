@@ -62,7 +62,7 @@ func (c Config) allowed(path string, test bool) bool {
 	switch {
 	case slices.Contains(stdAllowed, path), test && slices.Contains(testAllowed, path):
 		return true
-	case path == c.PBPackage, path == c.Module+"/internal/store":
+	case path == c.PBPackage, path == c.Module+"/internal/store", path == c.Module+"/internal/auth":
 		return true
 	}
 	for _, a := range modAllowed {
@@ -79,7 +79,7 @@ func (c Config) allowedList(test bool) string {
 		list = append(list, testAllowed...)
 	}
 	list = append(list, modAllowed...)
-	list = append(list, c.PBPackage, c.Module+"/internal/store")
+	list = append(list, c.PBPackage, c.Module+"/internal/store", c.Module+"/internal/auth (services with auth)")
 	return strings.Join(list, ", ")
 }
 

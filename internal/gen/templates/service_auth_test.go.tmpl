@@ -1,0 +1,143 @@
+package service
+
+import (
+	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"log/slog"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/golang-jwt/jwt/v5"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/peer"
+	"google.golang.org/grpc/status"
+
+	pb "{{.GoPkgPath}}"
+	"{{.Module}}/internal/auth"
+)
+{{- if .AuthJWT}}
+
+// The clients from newClient call through the real auth interceptor. By
+// default they call as a caller holding every role the spec names
+// (auth.AllRoles); asRoles(ctx, t, roles...) makes one call as a caller
+// with exactly those roles. In handlers, auth.FromContext(ctx) returns the
+// caller, whose Subject is "test-user".
+
+const (
+	testIssuer   = "https://idp.test"
+	testAudience = "{{.Name}}-test"
+)
+
+var testSigningKey = sync.OnceValue(func() *ecdsa.PrivateKey {
+	k, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		panic(err)
+	}
+	return k
+})
+
+// testAuth returns the server options that install the auth interceptors,
+// verifying tokens signed by testSigningKey.
+func testAuth(t *testing.T) []grpc.ServerOption {
+	t.Helper()
+	a := auth.New(t.Context(), auth.Config{Issuer: testIssuer, Audience: testAudience,
+		Keyfunc: func(*jwt.Token) (any, error) { return &testSigningKey().PublicKey, nil } }, slog.New(slog.DiscardHandler))
+	return []grpc.ServerOption{grpc.ChainUnaryInterceptor(a.Unary()), grpc.ChainStreamInterceptor(a.Stream())}
+}
+
+// mintToken signs a token for "test-user" with roles.
+func mintToken(roles []string) (string, error) {
+	now := time.Now()
+	c := jwt.MapClaims{"iss": testIssuer, "aud": testAudience, "sub": "test-user", "iat": now.Unix(), "exp": now.Add(time.Hour).Unix()}
+	parts := strings.Split(auth.RolesClaim, ".")
+	m := map[string]any(c)
+	for _, p := range parts[:len(parts)-1] {
+		next := map[string]any{}
+		m[p] = next
+		m = next
+	}
+	m[parts[len(parts)-1]] = append([]string{}, roles...)
+	return jwt.NewWithClaims(jwt.SigningMethodES256, c).SignedString(testSigningKey())
+}
+
+// asRoles returns ctx whose calls carry a token for a caller with exactly
+// roles; with none, a signed-in caller without roles.
+func asRoles(ctx context.Context, t testing.TB, roles ...string) context.Context {
+	t.Helper()
+	tok, err := mintToken(roles)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return metadata.AppendToOutgoingContext(ctx, "authorization", "Bearer "+tok)
+}
+
+// defaultCaller sends a token for a caller holding every role unless the
+// call already carries one.
+func defaultCaller(ctx context.Context, method string, req, reply any, cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption) error {
+	if md, ok := metadata.FromOutgoingContext(ctx); !ok || len(md.Get("authorization")) == 0 {
+		tok, err := mintToken(auth.AllRoles)
+		if err != nil {
+			return err
+		}
+		ctx = metadata.AppendToOutgoingContext(ctx, "authorization", "Bearer "+tok)
+	}
+	return invoker(ctx, method, req, reply, cc, opts...)
+}
+
+// TestCallerRoles checks that the test clients go through the access rules.
+func TestCallerRoles(t *testing.T) {
+	c, _ := newClient(t)
+	denied := func(err error) bool {
+		code := status.Code(err)
+		return code == codes.Unauthenticated || code == codes.PermissionDenied
+	}
+{{- with .Auth.RoleRPC}}
+	if _, err := c.{{.RPC}}(asRoles(t.Context(), t), &pb.{{.RPC}}Request{}); status.Code(err) != codes.PermissionDenied {
+		t.Errorf("{{.RPC}} without roles: %v, want PermissionDenied", err)
+	}
+	if _, err := c.{{.RPC}}(asRoles(t.Context(), t, {{index .Roles 0 | printf "%q"}}), &pb.{{.RPC}}Request{}); denied(err) {
+		t.Errorf("{{.RPC}} as {{index .Roles 0}}: %v, want the call to reach the handler", err)
+	}
+{{- else}}
+{{- with .Auth.ProtectedRPC}}
+	if _, err := c.{{.RPC}}(asRoles(t.Context(), t), &pb.{{.RPC}}Request{}); denied(err) {
+		t.Errorf("{{.RPC}} signed in: %v, want the call to reach the handler", err)
+	}
+{{- else}}
+	md, _ := metadata.FromOutgoingContext(asRoles(t.Context(), t))
+	if len(md.Get("authorization")) != 1 {
+		t.Error("asRoles sends no token")
+	}
+	_ = c
+	_ = denied
+{{- end}}
+{{- end}}
+}
+{{- else}}
+
+// The clients from newClient call through the real auth interceptor, as a
+// caller identified by a client certificate ("test-client", no roles).
+
+// testAuth returns server options that present a verified client
+// certificate and install the auth interceptors.
+func testAuth(t *testing.T) []grpc.ServerOption {
+	t.Helper()
+	a := auth.New(t.Context(), auth.Config{MTLSIdentity: true}, slog.New(slog.DiscardHandler))
+	cert := &x509.Certificate{Subject: pkix.Name{CommonName: "test-client"} }
+	chains := [][]*x509.Certificate{ {cert} }
+	withCert := func(ctx context.Context, req any, _ *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
+		return handler(peer.NewContext(ctx, &peer.Peer{AuthInfo: credentials.TLSInfo{State: tls.ConnectionState{VerifiedChains: chains} } }), req)
+	}
+	return []grpc.ServerOption{grpc.ChainUnaryInterceptor(withCert, a.Unary()), grpc.ChainStreamInterceptor(a.Stream())}
+}
+{{- end}}

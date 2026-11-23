@@ -34,6 +34,10 @@ type acceptanceExample struct {
 	request      string
 	expect       []acceptanceExpect
 	code         codes.Code
+{{- if .AuthJWT}}
+	hasAs        bool     // the example names its caller's roles
+	as           []string // those roles; otherwise the caller holds every role
+{{- end}}
 }
 
 type acceptanceSeed struct{ entity, json string }
@@ -48,6 +52,9 @@ var acceptanceExamples = []acceptanceExample{
 		request: {{printf "%q" .Request}},
 		expect: []acceptanceExpect{ {{- range .Expect}}{ {{printf "%q" .Path}}, {{printf "%q" .Want}} }, {{end -}} },
 		code: {{.Code}},
+{{- if $.AuthJWT}}
+		hasAs: {{.HasAs}}, as: {{.As}},
+{{- end}}
 	},
 {{- end}}
 }
@@ -130,7 +137,15 @@ func runAcceptance(t *testing.T, ex acceptanceExample) {
 			refs[g.entity+"."+strconv.Itoa(i)+"."+k] = acceptanceCanon(v)
 		}
 	}
+{{- if .AuthJWT}}
+	ctx := t.Context()
+	if ex.hasAs {
+		ctx = asRoles(ctx, t, ex.as...)
+	}
+	resp, err := acceptanceCalls[ex.method](ctx, c, acceptanceResolve(t, ex.request, refs))
+{{- else}}
 	resp, err := acceptanceCalls[ex.method](t.Context(), c, acceptanceResolve(t, ex.request, refs))
+{{- end}}
 	if ex.code != codes.OK {
 		if got := status.Code(err); got != ex.code {
 			t.Fatalf("%s returned %v (%v), want %v", ex.method, got, err, ex.code)

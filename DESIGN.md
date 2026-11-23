@@ -126,6 +126,8 @@ cmd/server/main.go                 config, store selection, TLS, signals, drain,
 internal/config                    env config with validation (all errors at once)
 internal/server                    interceptors (recovery, logging, load shedding, deadlines),
                                    TLS 1.3 with certificate reload, health (liveness/readiness)
+internal/auth                      with auth: JWT/JWKS and client-certificate identity, the per-RPC
+                                   rule table from the spec, interceptors, auth.FromContext
 internal/service                   handlers, validation, field masks, keyset paging
 internal/store                     Store interface; Memory; Postgres (pgx, migrations, CHECKs)
 internal/service/acceptance_test.go  the spec's examples (owned by the factory)
@@ -153,6 +155,35 @@ Choices:
   stopping, `MAX_CONNECTION_AGE` lets load balancers rebalance long-lived
   HTTP/2 connections, `MAX_IN_FLIGHT` sheds load with RESOURCE_EXHAUSTED, and
   calls without a deadline get one.
+- **Access control from the spec.** mTLS proves that a client holds a
+  certificate from a CA; it does not say who may call what. An optional
+  `auth:` block adds both halves. Authentication: bearer JWTs verified with
+  golang-jwt v5 (only RS256 and ES256, so `none` and HS256 key confusion
+  cannot pass; `exp` required, `exp`/`nbf` with 30 s leeway, `iss`, `aud`,
+  a non-empty `sub`), keys from the provider's JWKS through keyfunc v3,
+  which caches them, refreshes hourly and re-fetches (rate-limited, failing
+  fast) when a token names an unknown key id, so rotation needs no restart;
+  optionally the verified client certificate's URI SAN or common name.
+  Authorisation: every RPC gets a rule (`public`, `authenticated`, `deny`
+  or roles), and a generated table is enforced by unary and stream
+  interceptors after load shedding and before any handler. The zero rule is
+  `authenticated` and a nil authorizer fails closed. Health and reflection
+  stay open (probes carry no credentials; reflection can be switched off).
+  The key set loads in the background: startup never waits for the
+  identity provider, and calls with a token get UNAVAILABLE until it
+  arrives. Both libraries are pinned in the generated `go.mod`;
+  golang-jwt has no dependencies and keyfunc only jwkset and x/time, which
+  is why they won over lestrrat-go/jwx, whose dependency tree is larger
+  for features the service does not use.
+- **Auth is tested from the spec, not from itself.** The generator derives
+  the expected code for every RPC and kind of caller (anonymous, no roles,
+  each role, all roles) from the spec and writes it into a table-driven
+  test that mints tokens from an `httptest` JWKS server, next to tests for
+  expired, early, wrong-issuer, wrong-audience, unsigned, HS256, foreign-key
+  and rotated-key tokens. The service and acceptance tests run through the
+  real interceptor as a caller holding every role; an example's `as:`
+  narrows that, so examples can pin PERMISSION_DENIED. The smoke station
+  checks that the running binary refuses a protected RPC without a token.
 - **Kubernetes-ready.** gRPC probes, non-root, read-only root file system, all
   capabilities dropped, seccomp, topology spread, PDB, and a CPU limit that Go
   1.25+ turns into `GOMAXPROCS`.
@@ -322,3 +353,7 @@ here, because they are the one signal a prompt change cannot tune towards.
   so a destructive `USING` cast that fails on real rows is not caught there.
 - Migrations follow spec changes only. A template change that alters the
   DDL for the same spec (a new CHECK rule, say) is not migrated.
+- Auth beyond roles: roles for certificate identities (a mapping from
+  SPIFFE ids), scopes as a separate rule kind, attribute rules such as
+  ownership in the spec (today handlers check those with
+  `auth.FromContext`), and token introspection for opaque tokens.

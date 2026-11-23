@@ -106,6 +106,41 @@ free. Custom methods like `AdjustStock` are what the LLM implements.
 - Features (`otel`, `postgres`, `kubernetes`, `ci`, `docker`, `health`,
   `reflection`) are switched on or off under `features:`.
 
+### Authentication and access rules
+
+An optional `auth:` block makes the service identify callers and check a
+rule on every RPC. Without it the service accepts every caller, as before.
+
+```yaml
+auth:
+  jwt:                       # bearer JWTs, RS256 or ES256, keys from the JWKS
+    issuer: https://idp.example.com
+    audience: bookings
+    jwks_url: https://idp.example.com/.well-known/jwks.json
+  mtls_identity: true        # optional: a verified client certificate identifies callers without a token
+  roles_claim: roles         # default roles; dots reach into objects, e.g. realm_access.roles
+  default: authenticated     # rule for RPCs without one: authenticated (default), public or deny
+entities:
+  - name: Room
+    access: {create: [admin], update: [admin], delete: [admin], get: public, list: public}
+methods:
+  - name: CheckAvailability
+    access: [guest, frontdesk, admin]
+    examples:
+      - name: needs a role
+        as: []               # the caller's roles; unset means every role the spec names
+        error: PERMISSION_DENIED
+```
+
+- A rule is `public`, `authenticated`, `deny`, or a list of roles of which
+  the caller needs one. Entities name rules per operation, methods one rule.
+- Missing or bad credentials return `UNAUTHENTICATED`, a missing role
+  `PERMISSION_DENIED`. Credentials that are sent must be valid, even on
+  public RPCs.
+- Health and reflection never need credentials, so probes and grpcurl work.
+- Acceptance examples call as a caller holding every role unless they say
+  `as:`. `specs/bookings.yaml` is the worked example.
+
 The UI shows the generated proto contract live as you type.
 
 ### Versions and schema migrations
@@ -284,7 +319,11 @@ The Measure station audits every generated service and the UI shows it in a
 Security tab. Each control is checked in the files the run produced, or in a
 station's result, and cites the file and line it read: TLS 1.3 and mTLS,
 reflection, request size and stream caps, load shedding, deadlines, bounded
-string inputs, request bodies kept out of logs, a distroless non-root image
+string inputs, request bodies kept out of logs, access control (whether
+callers are authenticated at all, whether every RPC has a deliberate rule
+and no custom method is public by accident, whether token verification
+checks algorithm, issuer, audience and expiry, and whether tokens stay out
+of logs), a distroless non-root image
 pinned by digest, Kubernetes pod hardening, a least-privilege CI token with
 actions pinned by commit, gosec, a secrets scan, the LLM policy, govulncheck,
 fuzzing, the SBOM and provenance, and whether the factory ran the generated
@@ -299,6 +338,11 @@ that changed between two versions.
   schema.
 - UUIDv7 ids and keyset paging with validated, canonical page tokens.
 - TLS 1.3 with certificate reload and optional mTLS.
+- With `auth:`, an interceptor that verifies JWTs (signature against a
+  cached, self-refreshing JWKS; algorithm, `exp`/`nbf` with leeway, `iss`,
+  `aud`) or client certificates, enforces the per-RPC rules, and hands
+  handlers the caller through `auth.FromContext(ctx)`; table-driven tests
+  for every RPC and kind of caller against a test JWKS server.
 - Liveness and readiness health, drain on shutdown, connection max age, load
   shedding and default deadlines.
 - JSON logs, optional OpenTelemetry.

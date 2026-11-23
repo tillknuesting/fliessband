@@ -26,6 +26,7 @@ type Spec struct {
 	// Migrations controls how schema changes against the previous version
 	// are migrated; see migrations.go.
 	Migrations Migrations `yaml:"migrations" json:"migrations"`
+	Auth       *Auth      `yaml:"auth" json:"auth,omitempty"`
 }
 
 // Entity is a resource with generated CRUD RPCs.
@@ -38,6 +39,8 @@ type Entity struct {
 	// RenamedFrom is the entity's name in the previous version, so the
 	// migration renames its table instead of dropping it.
 	RenamedFrom string `yaml:"renamed_from" json:"renamed_from,omitempty"`
+	// Access maps operations to rules; see Auth.
+	Access map[string]Access `yaml:"access" json:"access,omitempty"`
 }
 
 // Field is a message field. Type is a proto scalar, "timestamp", or (in
@@ -68,6 +71,7 @@ type Method struct {
 	Request  []Field   `yaml:"request" json:"request"`
 	Response []Field   `yaml:"response" json:"response"`
 	Examples []Example `yaml:"examples" json:"examples,omitempty"`
+	Access   *Access   `yaml:"access" json:"access,omitempty"` // see Auth
 }
 
 // Example is an acceptance example for a custom method: records to seed, a
@@ -86,6 +90,10 @@ type Example struct {
 	Expect  map[string]any              `yaml:"expect" json:"expect,omitempty"`
 	Error   string                      `yaml:"error" json:"error,omitempty"`
 	Holdout bool                        `yaml:"holdout" json:"holdout,omitempty"`
+	// As names the roles of the caller when the service has auth: []
+	// is a signed-in caller without roles. Unset means a caller holding
+	// every role the spec names.
+	As []string `yaml:"as" json:"as,omitempty"`
 }
 
 // Features toggles optional parts of the generated service.
@@ -178,6 +186,7 @@ func (s *Spec) applyDefaults() {
 			e.Ops = slices.Clone(AllOps)
 		}
 	}
+	s.applyAuthDefaults()
 }
 
 var (
@@ -313,6 +322,7 @@ func (s *Spec) Validate() []Problem {
 		}
 	}
 	ps = append(ps, s.validateRenames()...)
+	ps = append(ps, s.validateAuth()...)
 	return ps
 }
 

@@ -1,0 +1,35 @@
+package auth
+
+// The access rules below come from the spec's auth block. Change them in
+// the spec and regenerate rather than here.
+{{- with .Auth}}
+{{- if .JWT}}
+
+// Token settings from the spec; AUTH_ISSUER, AUTH_AUDIENCE and AUTH_JWKS_URL
+// override them at run time.
+const (
+	DefaultIssuer   = {{printf "%q" .Issuer}}
+	DefaultAudience = {{printf "%q" .Audience}}
+	DefaultJWKSURL  = {{printf "%q" .JWKSURL}}
+	// RolesClaim is the claim the caller's roles are read from.
+	RolesClaim = {{printf "%q" .RolesClaim}}
+)
+{{- end}}
+
+// MTLSIdentity reports whether a verified client certificate identifies a
+// caller that sends no token.
+const MTLSIdentity = {{.MTLSIdentity}}
+
+// Rules is the access rule of every RPC of the service.
+var Rules = map[string]Rule{
+{{- range .Rules}}
+	{{printf "%q" .Method}}: {{.Expr}},{{if not .Explicit}} // the default{{end}}
+{{- end}}
+}
+
+// DefaultRule applies to methods without an entry in Rules ({{.DefaultKind}}).
+var DefaultRule = {{.Default}}
+
+// AllRoles lists every role the rules name.
+var AllRoles = []string{ {{- range $i, $r := .Roles}}{{if $i}}, {{end}}{{printf "%q" $r}}{{end -}} }
+{{- end}}

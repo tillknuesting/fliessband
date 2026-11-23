@@ -1,0 +1,58 @@
+package config
+
+import (
+	"strings"
+	"testing"
+	"time"
+)
+
+func TestAuthDefaults(t *testing.T) {
+	cfg, err := load(env(nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := AuthConfig{Issuer: {{printf "%q" .Auth.Issuer}}, Audience: {{printf "%q" .Auth.Audience}}, JWKSURL: {{printf "%q" .Auth.JWKSURL}},
+		JWKSRefresh: time.Hour, Leeway: 30 * time.Second}
+	if cfg.Auth != want {
+		t.Fatalf("auth defaults = %+v, want %+v", cfg.Auth, want)
+	}
+}
+
+func TestAuthOverrides(t *testing.T) {
+	cfg, err := load(env(map[string]string{"AUTH_ISSUER": "https://other.test", "AUTH_AUDIENCE": "aud",
+		"AUTH_JWKS_URL": "http://localhost:8080/jwks", "AUTH_JWKS_REFRESH": "1m", "AUTH_LEEWAY": "5m"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := AuthConfig{Issuer: "https://other.test", Audience: "aud", JWKSURL: "http://localhost:8080/jwks", JWKSRefresh: time.Minute, Leeway: 5 * time.Minute}
+	if cfg.Auth != want {
+		t.Fatalf("auth overrides = %+v, want %+v", cfg.Auth, want)
+	}
+}
+
+func TestAuthLocalJWKS(t *testing.T) {
+	for _, u := range []string{"http://localhost/jwks", "http://127.0.0.1:8080/jwks", "http://[::1]:8080/jwks", "https://idp.test/jwks"} {
+		if _, err := load(env(map[string]string{"AUTH_JWKS_URL": u})); err != nil {
+			t.Errorf("AUTH_JWKS_URL=%s: %v", u, err)
+		}
+	}
+}
+
+func TestAuthInvalid(t *testing.T) {
+	for _, tt := range []struct {
+		env  map[string]string
+		want string
+	}{
+		{map[string]string{"AUTH_JWKS_URL": "http://idp.example.com/jwks"}, "AUTH_JWKS_URL"},
+		{map[string]string{"AUTH_JWKS_URL": "ftp://idp.example.com/jwks"}, "AUTH_JWKS_URL"},
+		{map[string]string{"AUTH_JWKS_URL": "https://"}, "AUTH_JWKS_URL"},
+		{map[string]string{"AUTH_JWKS_URL": "::"}, "AUTH_JWKS_URL"},
+		{map[string]string{"AUTH_JWKS_REFRESH": "59s"}, "AUTH_JWKS_REFRESH"},
+		{map[string]string{"AUTH_LEEWAY": "301s"}, "AUTH_LEEWAY"},
+		{map[string]string{"AUTH_LEEWAY": "-1s"}, "AUTH_LEEWAY"},
+	} {
+		if _, err := load(env(tt.env)); err == nil || !strings.Contains(err.Error(), tt.want) {
+			t.Errorf("load(%v) = %v, want an error mentioning %s", tt.env, err, tt.want)
+		}
+	}
+}

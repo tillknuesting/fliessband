@@ -31,7 +31,11 @@ func newClient(t *testing.T) (pb.{{.ServiceName}}Client, *store.Memory) {
 	t.Helper()
 	st := store.NewMemory()
 	lis := bufconn.Listen(1 << 20)
+{{- if .Auth}}
+	srv := grpc.NewServer(testAuth(t)...)
+{{- else}}
 	srv := grpc.NewServer()
+{{- end}}
 	pb.Register{{.ServiceName}}Server(srv, New(st, slog.New(slog.DiscardHandler)))
 	go func() { _ = srv.Serve(lis) }()
 	t.Cleanup(srv.Stop)
@@ -39,6 +43,9 @@ func newClient(t *testing.T) (pb.{{.ServiceName}}Client, *store.Memory) {
 	conn, err := grpc.NewClient("passthrough:///bufnet",
 		grpc.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) { return lis.DialContext(ctx) }),
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
+{{- if .AuthJWT}}
+		grpc.WithChainUnaryInterceptor(defaultCaller),
+{{- end}}
 	)
 	if err != nil {
 		t.Fatalf("dial: %v", err)

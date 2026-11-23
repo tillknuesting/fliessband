@@ -16,6 +16,9 @@ import (
 	"google.golang.org/grpc/reflection"
 
 	pb "{{.GoPkgPath}}"
+{{- if .Auth}}
+	"{{.Module}}/internal/auth"
+{{- end}}
 )
 
 // LivenessService is the health service name for liveness probes: it
@@ -29,6 +32,11 @@ type Options struct {
 	RequestTimeout   time.Duration // deadline for calls that arrive without one
 	MaxInFlight      int           // concurrent calls before shedding load; 0 means no limit
 	MaxConnectionAge time.Duration // recycle connections so load balancers can rebalance
+{{- if .Auth}}
+	// Auth authenticates callers and enforces the spec's access rules. nil
+	// fails closed: only public RPCs, health and reflection answer.
+	Auth *auth.Authorizer
+{{- end}}
 }
 
 // Server is a grpc.Server with its health service.
@@ -46,8 +54,15 @@ func New(log *slog.Logger, svc pb.{{.ServiceName}}Server, o Options) *Server {
 		ka.MaxConnectionAgeGrace = 30 * time.Second
 	}
 	opts := []grpc.ServerOption{
+{{- if .Auth}}
+		// Auth runs after load shedding, so floods of bad tokens cannot
+		// crowd out real calls, and before any handler.
+		grpc.ChainUnaryInterceptor(Recovery(log), Logging(log), Limit(o.MaxInFlight), o.Auth.Unary(), Deadline(o.RequestTimeout)),
+		grpc.ChainStreamInterceptor(StreamRecovery(log), o.Auth.Stream()),
+{{- else}}
 		grpc.ChainUnaryInterceptor(Recovery(log), Logging(log), Limit(o.MaxInFlight), Deadline(o.RequestTimeout)),
 		grpc.ChainStreamInterceptor(StreamRecovery(log)),
+{{- end}}
 		grpc.KeepaliveParams(ka),
 		grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{MinTime: 30 * time.Second, PermitWithoutStream: true}),
 		grpc.MaxRecvMsgSize(4 << 20),
