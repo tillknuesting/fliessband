@@ -71,6 +71,7 @@ export function useHashRoute() {
   const read = () => {
     const h = location.hash
     if (h.startsWith('#/history')) return { view: 'history' as const, runId: null }
+    if (h.startsWith('#/floor')) return { view: 'floor' as const, runId: null }
     const m = h.match(/^#\/run\/(.+)$/)
     return { view: 'line' as const, runId: m ? decodeURIComponent(m[1]) : null }
   }

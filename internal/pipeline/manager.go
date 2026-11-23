@@ -309,6 +309,13 @@ func (m *Manager) Shutdown(ctx context.Context) error {
 	return nil
 }
 
+// Capacity reports how many lines run at once, how many are busy and how many runs wait.
+func (m *Manager) Capacity() (lines, active, queued int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return cap(m.sem), m.active, m.queued
+}
+
 // Stats returns a snapshot of the factory counters.
 func (m *Manager) Stats() Stats {
 	m.mu.Lock()

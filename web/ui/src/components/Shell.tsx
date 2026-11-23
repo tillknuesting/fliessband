@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Ban, CircleCheck, CircleX, History as HistoryIcon, LoaderCircle, Moon, Play, Search, Sun, Workflow } from 'lucide-react'
+import { Ban, CircleCheck, CircleX, Factory, History as HistoryIcon, LoaderCircle, Moon, Play, Search, Sun, Workflow } from 'lucide-react'
 import { CommandDialog, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList, CommandShortcut } from '@/components/ui/command'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { cn } from '@/lib/utils'
@@ -78,7 +78,7 @@ function NavItem({ href, active, icon: Icon, label, keys }: { href: string; acti
 }
 
 export function Sidebar(props: {
-  view: 'line' | 'history'
+  view: 'line' | 'history' | 'floor'
   runId: string | null
   runs: Summary[]
   status: FactoryStatus | null
@@ -118,6 +118,7 @@ export function Sidebar(props: {
         </Tooltip>
       </div>
       <nav aria-label="Views" className="space-y-px px-3">
+        <NavItem href="#/floor" active={view === 'floor'} icon={Factory} label="Floor" keys="G F" />
         <NavItem href={runId ? `#/run/${runId}` : '#/'} active={view === 'line'} icon={Workflow} label="Line" keys="G L" />
         <NavItem href="#/history" active={view === 'history'} icon={HistoryIcon} label="History" keys="G H" />
       </nav>
@@ -214,6 +215,13 @@ export function CommandMenu(props: {
             <CommandShortcut>
               <Kbd>{MOD}</Kbd>
               <Kbd>↵</Kbd>
+            </CommandShortcut>
+          </CommandItem>
+          <CommandItem onSelect={go(() => (location.hash = '#/floor'))}>
+            <Factory /> Go to the floor
+            <CommandShortcut>
+              <Kbd>G</Kbd>
+              <Kbd>F</Kbd>
             </CommandShortcut>
           </CommandItem>
           <CommandItem onSelect={go(() => (location.hash = '#/history'))}>

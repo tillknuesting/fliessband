@@ -3,6 +3,7 @@ import { TooltipProvider } from '@/components/ui/tooltip'
 import { CommandMenu, Kbd, MOD, Sidebar, StatusIcon, useTheme } from '@/components/Shell'
 import { PanelLeft, Search } from 'lucide-react'
 import { History } from '@/components/History'
+import { Floor } from '@/components/Floor'
 import { RunView } from '@/components/RunView'
 import { SignIn } from '@/components/SignIn'
 import { SpecPanel } from '@/components/SpecPanel'
@@ -39,8 +40,8 @@ export default function App() {
       if (e.metaKey || e.ctrlKey || e.altKey || t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName)) return
       if (e.key === '[') toggleSpec()
       else if (e.key === 'g') g = Date.now()
-      else if (Date.now() - g < 800 && (e.key === 'h' || e.key === 'l')) {
-        location.hash = e.key === 'h' ? '#/history' : '#/'
+      else if (Date.now() - g < 800 && (e.key === 'h' || e.key === 'l' || e.key === 'f')) {
+        location.hash = { h: '#/history', l: '#/', f: '#/floor' }[e.key]
         g = 0
       }
     }
@@ -129,8 +130,8 @@ export default function App() {
               </button>
             )}
             <nav aria-label="Breadcrumb" className="flex min-w-0 items-center gap-1.5 text-muted-foreground">
-              <a href={route.view === 'history' ? '#/history' : '#/'} className="hover:text-foreground">
-                {route.view === 'history' ? 'History' : 'Line'}
+              <a href={{ history: '#/history', floor: '#/floor', line: '#/' }[route.view]} className="hover:text-foreground">
+                {{ history: 'History', floor: 'Floor', line: 'Line' }[route.view]}
               </a>
               {route.view === 'line' && run && (
                 <>
@@ -154,7 +155,9 @@ export default function App() {
             </button>
           </header>
           <main className="min-h-0 flex-1 overflow-y-auto">
-            {route.view === 'history' ? (
+            {route.view === 'floor' ? (
+              <Floor runs={history} status={status} examples={examples} onRuns={setHistory} onStatus={setStatus} />
+            ) : route.view === 'history' ? (
               <div className="p-5">
                 <History runs={history} />
               </div>

@@ -85,8 +85,10 @@ export interface Summary {
   id: string; name: string; created_at: string; status: Status; llm: boolean; score?: number; grade?: string
   coverage?: number; mean_cyclomatic?: number; mean_mi?: number; code_lines: number; tests: number; findings: number
   rpcs: number; implemented: number; duration_ms: number; p99_ms?: number; failed_at?: string
-  mutation_score?: number; examples: number; examples_passed: number
+  mutation_score?: number; examples: number; examples_passed: number; cost_usd?: number; stages?: Brief[]
 }
+
+export interface Brief { id: string; status: Status; ms: number; started_at?: string; summary?: string }
 
 export interface Validation {
   ok: boolean; error?: string; problems: { path: string; message: string; warning: boolean }[]
@@ -101,7 +103,10 @@ export interface Outline {
 }
 
 export interface Tool { name: string; version: string; found: boolean }
-export interface FactoryStatus { tools: Tool[]; llm: { model: string; base_url: string; models: string[]; reviewer: string } | null; version: string; auth: boolean }
+export interface FactoryStatus {
+  tools: Tool[]; llm: { model: string; base_url: string; models: string[]; reviewer: string } | null; version: string; auth: boolean
+  capacity?: { lines: number; active: number; queued: number }
+}
 export interface Example { name: string; file: string; source: string }
 export interface FileEntry { path: string; bytes: number; origin: string }
 

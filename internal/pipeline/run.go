@@ -145,6 +145,18 @@ type Summary struct {
 	Mutation    *float64   `json:"mutation_score,omitempty"`
 	Examples    int        `json:"examples"`
 	ExamplesOK  int        `json:"examples_passed"`
+	CostUSD     float64    `json:"cost_usd,omitempty"`
+	Stages      []Brief    `json:"stages"`
+}
+
+// Brief is one station's outcome in a run summary, enough for the floor view
+// to show live progress and find bottlenecks across runs.
+type Brief struct {
+	ID         string     `json:"id"`
+	Status     Status     `json:"status"`
+	DurationMs float64    `json:"ms"`
+	StartedAt  *time.Time `json:"started_at,omitempty"`
+	Summary    string     `json:"summary,omitempty"`
 }
 
 func newRun(id string, src []byte, opts Options, dir string) *Run {
@@ -235,7 +247,13 @@ func (r *Run) Summary() Summary {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	s := Summary{ID: r.ID, Name: r.Name, CreatedAt: r.CreatedAt, FinishedAt: r.FinishedAt, Status: r.Status, LLM: r.Options.LLM}
+	s.Stages = make([]Brief, 0, len(r.Stages))
 	for _, st := range r.Stages {
+		b := Brief{ID: st.ID, Status: st.Status, DurationMs: st.DurationMs}
+		if st.Status == Running {
+			b.StartedAt, b.Summary = st.StartedAt, st.Summary
+		}
+		s.Stages = append(s.Stages, b)
 		s.DurationMs += st.DurationMs
 		if st.Status == Failed && s.FailedAt == "" {
 			s.FailedAt = st.Name
@@ -263,6 +281,7 @@ func (r *Run) Summary() Summary {
 		if a := rep.Acceptance; a != nil {
 			s.Examples, s.ExamplesOK = len(a.Examples), a.Passed
 		}
+		s.CostUSD = rep.Factory.CostUSD
 	}
 	return s
 }

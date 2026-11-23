@@ -209,6 +209,9 @@
 .stamp { transform: rotate(-9deg); animation: stamp 0.45s cubic-bezier(.3,1.4,.5,1) 0.7s both; }
 .gauge-arc { transition: stroke-dashoffset 1s cubic-bezier(.3,0,.2,1); }
 
+@keyframes mini { 50% { opacity: 0.45; } }
+.mini-running { animation: mini 1s ease-in-out infinite; }
+
 /* The service blueprint: wires draw in once, packets flow along lit wires. */
 @keyframes draw { from { stroke-dashoffset: 1; } to { stroke-dashoffset: 0; } }
 .bp-wire-draw { stroke-dasharray: 1; animation: draw 0.6s cubic-bezier(.3,0,.2,1) both; }
@@ -218,7 +221,7 @@
 .bp-building { animation: building 1s ease-in-out infinite; }
 
 @media (prefers-reduced-motion: reduce) {
-  .bp-wire-draw, .bp-flow, .bp-building { animation: none; }
+  .bp-wire-draw, .bp-flow, .bp-building, .mini-running { animation: none; }
   .belt-moving, .work-piece-moving, .lamp-running, .live-tail::after { animation: none; }
   .stamp { animation: none; }
   .gauge-arc { transition: none; }
