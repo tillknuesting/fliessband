@@ -274,6 +274,12 @@ func (p PassCount) String() string {
 type Tournament struct {
 	Winner     string      `json:"winner"`
 	Candidates []Candidate `json:"candidates"`
+	// Tests from losing candidates that pass on the winner's code are
+	// appended to its test file, kept only if the whole file then passes.
+	MergedTests int            `json:"merged_tests,omitempty"`
+	MergedFrom  map[string]int `json:"merged_from,omitempty"` // model -> tests merged from it
+	Merged      []string       `json:"merged,omitempty"`      // "model: TestName", or "model: TestName as NewName" when renamed
+	MergeNote   string         `json:"merge_note,omitempty"`
 }
 
 // Candidate is one model's entry in the tournament.
@@ -299,6 +305,14 @@ type Review struct {
 	Model    string          `json:"model"`
 	Findings []ReviewFinding `json:"findings"`
 	Note     string          `json:"note,omitempty"`
+	// The "bug" findings go back to the winning model as one repair, kept
+	// only if policy, build, vet, test and acceptance (holdouts included)
+	// still pass and no test or example that passed before fails.
+	FixAttempted  bool   `json:"fix_attempted,omitempty"`
+	FixKept       bool   `json:"fix_kept,omitempty"`
+	FixModel      string `json:"fix_model,omitempty"`
+	FixedFindings int    `json:"fixed_findings,omitempty"` // bug findings the kept fix answered
+	FixNote       string `json:"fix_note,omitempty"`
 }
 
 // ReviewFinding is one problem the reviewer reported.

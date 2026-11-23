@@ -212,10 +212,32 @@ by its rivals' tests. Holdout examples run but never count towards the
 choice, so they still judge the winner fairly. Repairs and test hardening go
 to the winning model.
 
+**Merged tests.** The losers' tests are not thrown away. Those that passed
+on the winner's code during cross-testing are appended to its
+`custom_test.go`, with the helpers they need; a test whose name is taken is
+renamed (`TestXFromVendorModel`), and a copy of a test already there is
+dropped. The merge is kept only if the whole merged file compiles and passes
+against the winner's code; otherwise the winner's own tests go on. The report
+says how many tests were merged and from which model
+(`factory.tournament.merged_tests`, `merged_from`).
+
 **Review.** After the acceptance station, a reviewer model (ideally from
 another vendor) reads the final code against the method docs and reports
-likely bugs and risks, each linked to its line. It reports; it never stops
-the line.
+likely bugs and risks, each linked to its line. It never stops the line.
+
+**Review fix.** When the reviewer reports findings of severity `bug`, they go
+back to the winning model as one more repair, with the numbered lines they
+point at; the model is asked to fix only real bugs and to add a test that
+shows each fix. The answer then has to pass policy, build, vet, the tests and
+every acceptance example, holdouts included, and no test that passed before
+may fail. Only then is it kept; otherwise the previous files, test results and
+coverage are restored exactly. There is one attempt, and nothing about a
+rejected fix goes back to the model, so the holdouts stay hidden. The outcome
+is in `factory.review` (`fix_attempted`, `fix_kept`, `fixed_findings`,
+`fix_note`) and in the review station's summary.
+
+Without an LLM, or with a single model, there is no tournament and nothing
+to merge; without a reviewer there is no review and no review fix.
 
 With OpenRouter, every call's cost is recorded, per candidate and per run.
 The CLI takes `-models` and `-reviewer`, and the UI has fields for both.

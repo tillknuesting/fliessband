@@ -292,6 +292,44 @@ func (c *Client) Harden(ctx context.Context, model string, in Context, testFile,
 	return c.ask(ctx, model, b.String(), []string{testFile})
 }
 
+// FixReview sends a reviewer's "bug" findings back to the model that wrote
+// the code, as one more repair. Each finding carries the numbered lines it
+// points at. The model is asked to fix only real bugs and to prove each fix
+// with a test; the factory keeps the answer only if every gate still passes.
+func (c *Client) FixReview(ctx context.Context, model string, in Context, findings []ReviewFinding) (Result, error) {
+	var b strings.Builder
+	writeContext(&b, in)
+	b.WriteString("\n## Task\n\nYour files compile and pass their tests and the visible examples. A reviewer model read them against the method docs and reports the likely bugs below. " +
+		"The reviewer can be wrong: fix only findings that are real bugs, that is behaviour contradicting a method's doc, and change nothing else. " +
+		"For every bug you fix, add a test that fails on the current code and passes on the fixed code. Keep every existing test that still applies. " +
+		"If no finding is a real bug, reply with the files unchanged.\n\n### Reviewer findings\n")
+	for i, f := range findings {
+		fmt.Fprintf(&b, "\n%d. %s:%d: %s\n", i+1, f.File, f.Line, f.Message)
+		if src, ok := in.Owned[f.File]; ok && f.Line > 0 {
+			if ex := excerpt(src, f.Line, 3); ex != "" {
+				fmt.Fprintf(&b, "\n```go\n%s```\n", ex)
+			}
+		}
+	}
+	b.WriteString("\n")
+	b.WriteString(in.MethodBrief)
+	return c.ask(ctx, model, b.String(), sortedKeys(in.Owned))
+}
+
+// excerpt returns the numbered lines around line (1-based), radius lines
+// on each side, or "" when line is outside src.
+func excerpt(src string, line, radius int) string {
+	lines := strings.Split(strings.TrimRight(src, "\n"), "\n")
+	if line < 1 || line > len(lines) {
+		return ""
+	}
+	var b strings.Builder
+	for i := max(1, line-radius); i <= min(len(lines), line+radius); i++ {
+		fmt.Fprintf(&b, "%4d  %s\n", i, lines[i-1])
+	}
+	return b.String()
+}
+
 // writeContext writes the parts of the prompt that stay the same across
 // calls first, so providers with prefix caching can reuse them.
 func writeContext(b *strings.Builder, in Context) {
