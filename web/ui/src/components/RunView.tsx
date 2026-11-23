@@ -103,7 +103,7 @@ export function RunView({ run, error, validation }: { run: Run | null; error: st
             </>
           )}
         </div>
-        <Conveyor stages={stages} running={run?.status === 'running'} selected={current?.id} onSelect={setSelected} />
+        <Conveyor stages={stages} running={run?.status === 'running'} runStatus={run?.status} grade={run?.report?.score.grade} selected={current?.id} onSelect={setSelected} />
         <StationDetail stage={current} />
         <Tabs value={tab} onValueChange={setTab}>
           <TabsList>

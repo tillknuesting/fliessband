@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Bar, BarChart, CartesianGrid, LabelList, XAxis } from 'recharts'
 import { CircleAlert, CircleCheck, CircleX, Download, Trophy } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
@@ -73,19 +73,82 @@ function Histogram({ title, description, data }: { title: string; description: s
   )
 }
 
+const GRADE_COLOR: Record<string, string> = { A: 'var(--good)', B: 'var(--good)', C: 'var(--warn)', D: 'var(--destructive)', F: 'var(--destructive)' }
+
+/** The score as a ring that fills once, next to the line's inspection stamp. */
+function Gauge({ total, grade }: { total: number; grade: string }) {
+  const r = 50
+  const len = 2 * Math.PI * r
+  const [shown, setShown] = useState(0)
+  useEffect(() => {
+    const t = setTimeout(() => setShown(total), 60)
+    return () => clearTimeout(t)
+  }, [total])
+  return (
+    <svg viewBox="0 0 120 120" className="size-[124px] shrink-0" role="img" aria-label={`quality score ${Math.round(total)} of 100`}>
+      <circle cx="60" cy="60" r={r} fill="none" stroke="var(--muted)" strokeWidth="9" />
+      <circle
+        className="gauge-arc"
+        cx="60"
+        cy="60"
+        r={r}
+        fill="none"
+        stroke={GRADE_COLOR[grade] ?? 'var(--chart-1)'}
+        strokeWidth="9"
+        strokeLinecap="round"
+        strokeDasharray={len}
+        strokeDashoffset={len * (1 - shown / 100)}
+        transform="rotate(-90 60 60)"
+      />
+      <text x="60" y="62" textAnchor="middle" dominantBaseline="middle" className="fill-foreground text-[38px] font-bold tabular-nums" style={{ letterSpacing: '-0.04em' }}>
+        {Math.round(total)}
+      </text>
+      <text x="60" y="88" textAnchor="middle" className="fill-muted-foreground text-[10px]">
+        of 100
+      </text>
+    </svg>
+  )
+}
+
+function Stamp({ grade, capped }: { grade: string; capped: boolean }) {
+  const color = GRADE_COLOR[grade] ?? 'var(--foreground)'
+  const word = capped ? 'gesperrt' : 'geprüft'
+  return (
+    <svg viewBox="0 0 100 100" className="stamp size-[92px] shrink-0" role="img" aria-label={`grade ${grade}, ${capped ? 'blocked' : 'inspected'}`} style={{ color }}>
+      <defs>
+        <path id="stamp-ring" d="M50,50 m-34,0 a34,34 0 1,1 68,0 a34,34 0 1,1 -68,0" />
+        <filter id="stamp-ink">
+          <feTurbulence type="fractalNoise" baseFrequency="0.35" numOctaves="2" seed="7" />
+          <feColorMatrix values="0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 -1.6 1.75" />
+          <feComposite in="SourceGraphic" operator="in" />
+        </filter>
+      </defs>
+      <g filter="url(#stamp-ink)" fill="none" stroke="currentColor">
+        <circle cx="50" cy="50" r="46" strokeWidth="3" />
+        <circle cx="50" cy="50" r="25" strokeWidth="1.5" />
+        <text fill="currentColor" stroke="none" className="text-[9px] font-semibold">
+          <textPath href="#stamp-ring" startOffset="0" textLength="211" lengthAdjust="spacing">
+            {`Fliessband · ${word} · Fliessband · ${word} · `}
+          </textPath>
+        </text>
+        <text x="50" y="51" textAnchor="middle" dominantBaseline="central" fill="currentColor" stroke="none" className="text-[30px] font-extrabold">
+          {grade}
+        </text>
+      </g>
+    </svg>
+  )
+}
+
 function ScoreCard({ rep }: { rep: Report }) {
   const sc = rep.score
   return (
     <Card>
-      <CardContent className="grid items-center gap-6 md:grid-cols-[220px_1fr]">
+      <CardContent className="grid items-center gap-6 md:grid-cols-[250px_1fr]">
         <div>
           <div className="text-sm text-muted-foreground">Quality score</div>
-          <div className="mt-1 flex items-end gap-3">
-            <span className="text-6xl leading-none font-bold tracking-tight tabular-nums">{Math.round(sc.total)}</span>
-            <span className="pb-1 text-sm text-muted-foreground">of 100</span>
-            <span aria-label={`grade ${sc.grade}`} className="grid size-11 -rotate-3 place-items-center rounded-md border-2 border-foreground text-2xl font-bold">
-              {sc.grade}
-            </span>
+          <div className="mt-2 flex items-center gap-2">
+            <Gauge total={sc.total} grade={sc.grade} />
+            <Stamp grade={sc.grade} capped={sc.capped} />
           </div>
           {sc.capped && <p className="mt-2 text-xs text-destructive">Capped at 40: a gate failed.</p>}
         </div>
