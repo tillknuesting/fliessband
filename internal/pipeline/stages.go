@@ -1295,7 +1295,15 @@ func (x *executor) stageReview(ctx context.Context, st *StageState) error {
 	if model == x.llmModel() {
 		rev.Note = "the reviewer is the model that wrote the code; a different model catches more"
 	}
-	if bugs > 0 {
+	x.fixReview(ctx, st, rev, found) // one guarded repair for the bugs; see reviewfix.go
+	switch {
+	case rev.FixKept:
+		x.summary(st, "%s reported %s; the fix by %s was kept: every gate still passes (%d other findings)", model,
+			fmtCount(bugs, "likely bug", "likely bugs"), rev.FixModel, len(found)-bugs)
+		return nil
+	case bugs > 0 && rev.FixAttempted:
+		return warn("%s reports %s and %d other findings; the fix was not kept: %s", model, fmtCount(bugs, "likely bug", "likely bugs"), len(found)-bugs, rev.FixNote)
+	case bugs > 0:
 		return warn("%s reports %s and %d other findings", model, fmtCount(bugs, "likely bug", "likely bugs"), len(found)-bugs)
 	}
 	x.summary(st, "%s found no bugs (%d other findings)%s", model, len(found), usd(res.Usage.CostUSD))

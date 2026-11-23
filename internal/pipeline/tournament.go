@@ -43,6 +43,9 @@ type candidate struct {
 	ms    float64
 	tests []string // top-level tests declared in its test file
 	m     metrics.Candidate
+	// crossRuns holds, per test author, which of that author's tests
+	// passed on this candidate's code; mergeTests reuses it.
+	crossRuns map[string]map[string]bool
 }
 
 func (x *executor) tournament(ctx context.Context, st *StageState, models []string, in llm.Context) error {
@@ -144,6 +147,10 @@ func (x *executor) tournament(ctx context.Context, st *StageState, models []stri
 				x.log(st, fmt.Sprintf("%s's tests do not compile against %s's code; not counted", tests.model, impl.model))
 				continue
 			}
+			if impl.crossRuns == nil {
+				impl.crossRuns = map[string]map[string]bool{}
+			}
+			impl.crossRuns[tests.model] = results
 			pc := count(results, tests.tests)
 			for _, name := range tests.tests {
 				if !results[name] {
@@ -180,10 +187,17 @@ func (x *executor) tournament(ctx context.Context, st *StageState, models []stri
 	}
 	x.winner = win.model
 	x.rep.Factory.LLMModel = win.model
+	if err := x.mergeTests(ctx, st, dir, win, cands, t); err != nil { // see merge.go
+		return err
+	}
 	if err := x.writeOwned(st, win.files); err != nil {
 		return err
 	}
-	x.summary(st, "%s of %d models chosen: %s; examples %s, others' tests %s", win.model, len(models), win.m.Status, win.m.Visible, win.m.Foreign)
+	merged := ""
+	if t.MergedTests > 0 {
+		merged = fmt.Sprintf("; %s merged from losing models", fmtCount(t.MergedTests, "test", "tests"))
+	}
+	x.summary(st, "%s of %d models chosen: %s; examples %s, others' tests %s%s", win.model, len(models), win.m.Status, win.m.Visible, win.m.Foreign, merged)
 	return nil
 }
 

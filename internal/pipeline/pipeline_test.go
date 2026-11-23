@@ -1,8 +1,11 @@
 package pipeline
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"go/format"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -534,5 +537,167 @@ func TestTournament(t *testing.T) {
 	b, _ := os.ReadFile(filepath.Join(r.ServiceDir(), "internal/service/custom.go"))
 	if !strings.Contains(string(b), "maxIDLen") {
 		t.Error("the service does not carry the winning implementation")
+	}
+	// The buggy model lost, but its happy-path test passes on the winner's
+	// code, so it is merged into the winner's tests. The broken model's
+	// tests never compiled against anything and are not merged.
+	if tour.MergedTests != 1 || tour.MergedFrom["vendor/buggy"] != 1 || len(tour.Merged) != 1 || tour.Merged[0] != "vendor/buggy: TestCompleteTaskHappy" {
+		t.Errorf("merged %d %v %v (%s), want TestCompleteTaskHappy from vendor/buggy", tour.MergedTests, tour.MergedFrom, tour.Merged, tour.MergeNote)
+	}
+	b, _ = os.ReadFile(filepath.Join(r.ServiceDir(), "internal/service/custom_test.go"))
+	if !strings.Contains(string(b), "func TestCompleteTaskHappy(t *testing.T)") || !strings.Contains(string(b), "func TestCompleteTask(t *testing.T)") {
+		t.Errorf("the merged test is not in the final test file:\n%s", b)
+	}
+	if tr := got.Report.Tests; tr == nil || tr.Failed != 0 || tr.TopLevel < 2 {
+		t.Errorf("tests = %+v, want both tests passing in the test station", tr)
+	}
+}
+
+// lenientCustom is fixedCustom without the id length check: it passes every
+// gate, but the reviewer calls the missing check a bug.
+var lenientCustom = strings.Replace(strings.Replace(fixedCustom, "const maxIDLen = 200\n\n", "", 1),
+	"\tif len(req.GetId()) > maxIDLen {\n\t\treturn nil, status.Error(codes.InvalidArgument, \"id: too long\")\n\t}\n", "", 1)
+
+// TestReviewFix drives the review fix: the reviewer reports a bug, the
+// implementing model answers once, and the factory keeps the answer only if
+// every gate still passes.
+func TestReviewFix(t *testing.T) {
+	toolsDir := tools(t)
+	hardened := strings.Replace(hardenedTest, "import (\n", "import (\n\t\"strings\"\n", 1)
+	for _, tc := range []struct {
+		name   string
+		fix    string // custom.go of the fixing answer
+		kept   bool
+		reason string // in the note when not kept
+	}{
+		{name: "kept", fix: fixedCustom, kept: true},
+		// The "fix" turns the empty-id error into FAILED_PRECONDITION, which
+		// TestCompleteTask catches.
+		{name: "reverted", fix: strings.Replace(fixedCustom, `codes.InvalidArgument, "id: is required"`, `codes.FailedPrecondition, "id: is required"`, 1),
+			reason: "TestCompleteTask"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			var mu sync.Mutex
+			var fixPrompts []string
+			fake := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				body, _ := io.ReadAll(r.Body)
+				var req struct {
+					Model    string        `json:"model"`
+					Messages []llm.Message `json:"messages"`
+				}
+				_ = json.Unmarshal(body, &req)
+				prompt := req.Messages[len(req.Messages)-1].Content
+				var content string
+				switch {
+				case req.Model == "vendor/reviewer":
+					content = "```json\n[{\"file\": \"internal/service/custom.go\", \"line\": 18, \"severity\": \"bug\", \"message\": \"Ids longer than 200 characters are not rejected.\"}]\n```"
+				case strings.Contains(prompt, "Reviewer findings"):
+					mu.Lock()
+					fixPrompts = append(fixPrompts, prompt)
+					mu.Unlock()
+					content = block("internal/service/custom.go", tc.fix) + block("internal/service/custom_test.go", hardened)
+				default:
+					content = block("internal/service/custom.go", lenientCustom) + block("internal/service/custom_test.go", customTest)
+				}
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"choices": []any{map[string]any{"message": map[string]string{"role": "assistant", "content": content}}},
+					"usage":   map[string]any{"prompt_tokens": 1000, "completion_tokens": 300},
+				})
+			}))
+			defer fake.Close()
+
+			src, err := os.ReadFile("../../specs/tasks.yaml")
+			if err != nil {
+				t.Fatal(err)
+			}
+			client := &llm.Client{BaseURL: fake.URL, APIKey: "test", Model: "vendor/lenient", HTTP: fake.Client()}
+			m, err := NewManager(t.TempDir(), toolsDir, client)
+			if err != nil {
+				t.Fatal(err)
+			}
+			r, err := m.Start(src, Options{LLM: true, Reviewer: "vendor/reviewer"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			m.Wait(r.ID)
+			var got Run
+			if err := json.Unmarshal(r.JSON(), &got); err != nil {
+				t.Fatal(err)
+			}
+			for _, st := range got.Stages {
+				t.Logf("%-12s %-8s %s", st.ID, st.Status, st.Summary)
+			}
+			if got.Status != Passed {
+				t.Fatalf("run status = %s, want passed", got.Status)
+			}
+			fx := got.Report.Factory
+			rev := fx.Review
+			if rev == nil || !rev.FixAttempted || rev.FixModel != "vendor/lenient" || rev.FixKept != tc.kept {
+				t.Fatalf("review = %+v, want a fix attempt by vendor/lenient, kept %v", rev, tc.kept)
+			}
+			t.Logf("fix note: %s", rev.FixNote)
+			var purposes []string
+			for _, p := range fx.Prompts {
+				purposes = append(purposes, p.Purpose)
+			}
+			if strings.Join(purposes, ",") != "implement,review,review-fix" || fx.LLMCalls != 3 || fx.TokensIn != 3000 {
+				t.Errorf("purposes %v, calls %d, tokens in %d; want implement, review, review-fix", purposes, fx.LLMCalls, fx.TokensIn)
+			}
+			if len(fixPrompts) != 1 {
+				t.Fatalf("%d fix prompts, want exactly one", len(fixPrompts))
+			}
+			p := fixPrompts[0]
+			if !strings.Contains(p, "Ids longer than 200 characters") || !strings.Contains(p, "  18  ") {
+				t.Errorf("the fix prompt lacks the finding or its numbered lines:\n%.1500s", p)
+			}
+			if strings.Contains(p, "keeps the other fields") || strings.Contains(p, "by the 3rd") || strings.Contains(p, "acceptanceExamples") {
+				t.Error("the fix prompt leaks a holdout example or the acceptance tests")
+			}
+			if st := got.stage("test"); st.Status != Passed {
+				t.Errorf("test station %s", st.Status)
+			}
+			if acc := got.Report.Acceptance; acc == nil || acc.Passed != 3 || acc.Failed != 0 {
+				t.Errorf("acceptance = %+v, want all 3 examples passing", acc)
+			}
+			if tr := got.Report.Tests; tr == nil || tr.Failed != 0 {
+				t.Errorf("tests = %+v, want no failures", tr)
+			}
+
+			impl, _ := os.ReadFile(filepath.Join(r.ServiceDir(), "internal/service/custom.go"))
+			tests, _ := os.ReadFile(filepath.Join(r.ServiceDir(), "internal/service/custom_test.go"))
+			man, err := gen.LoadManifest(r.ServiceDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, f := range man.Files {
+				if f.Path == "internal/service/custom.go" || f.Path == "internal/service/custom_test.go" {
+					b, _ := os.ReadFile(filepath.Join(r.ServiceDir(), f.Path))
+					if sum := sha256.Sum256(b); hex.EncodeToString(sum[:]) != f.SHA256 {
+						t.Errorf("the manifest digest of %s does not match the file", f.Path)
+					}
+				}
+			}
+			if tc.kept {
+				if rev.FixedFindings != 1 || got.stage("review").Status != Passed {
+					t.Errorf("fixed findings %d, review %s; want 1, passed", rev.FixedFindings, got.stage("review").Status)
+				}
+				if !strings.Contains(string(impl), "maxIDLen") || !strings.Contains(string(tests), "func TestCompleteTaskIDLength") {
+					t.Error("the kept fix is not in the service")
+				}
+				if tr := got.Report.Tests; tr == nil || tr.TopLevel < 2 {
+					t.Errorf("tests = %+v, want the report to count the new test", tr)
+				}
+				return
+			}
+			if !strings.Contains(rev.FixNote, tc.reason) || got.stage("review").Status != Warning {
+				t.Errorf("note %q, review %s; want %q and a warning", rev.FixNote, got.stage("review").Status, tc.reason)
+			}
+			wantImpl, _ := format.Source([]byte(lenientCustom))
+			wantTests, _ := format.Source([]byte(customTest))
+			if string(impl) != string(wantImpl) || string(tests) != string(wantTests) {
+				t.Errorf("the rejected fix was not reverted exactly:\n%s\n%s", impl, tests)
+			}
+		})
 	}
 }
