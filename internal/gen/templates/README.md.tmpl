@@ -51,6 +51,13 @@ go run ./cmd/server
 | `MAX_CONNECTION_AGE` | `5m` | Recycle connections so load balancers can rebalance |
 | `DRAIN_DELAY` | `0s` | Report NOT_SERVING this long before stopping (5s in the Kubernetes manifest) |
 | `SHUTDOWN_TIMEOUT` | `10s` | Time allowed for in-flight calls on shutdown |
+{{- if .AuthJWT}}
+| `AUTH_ISSUER` | `{{.Auth.Issuer}}` | Required `iss` claim of bearer tokens |
+| `AUTH_AUDIENCE` | `{{.Auth.Audience}}` | Required `aud` claim of bearer tokens |
+| `AUTH_JWKS_URL` | `{{.Auth.JWKSURL}}` | The identity provider's JSON Web Key Set; https (http only for localhost) |
+| `AUTH_JWKS_REFRESH` | `1h` | How often the key set is fetched again; unknown key ids also trigger a fetch, at most every 30s |
+| `AUTH_LEEWAY` | `30s` | Clock skew allowed on `exp` and `nbf`, at most `5m` |
+{{- end}}
 {{- if .OTel}}
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | unset | Enables OTLP traces and metrics when set |
 {{- end}}
@@ -66,6 +73,48 @@ grpcurl -plaintext -d '{{.ExampleJSON}}' localhost:{{$.Port}} {{$.FullServiceNam
 {{- end}}{{end}}
 ```
 
+{{with .Auth -}}
+## Access control
+
+Every RPC has an access rule from the spec, enforced by an interceptor
+before any handler runs:
+
+| RPC | Rule |
+|---|---|
+{{- range .Rules}}
+| `{{.RPC}}` | {{if eq .Kind "roles"}}roles {{range $i, $r := .Roles}}{{if $i}}, {{end}}`{{$r}}`{{end}}{{else}}{{.Kind}}{{end}}{{if not .Explicit}} (default){{end}} |
+{{- end}}
+
+Callers identify themselves with
+{{- if .JWT}} a bearer token, `authorization: Bearer <JWT>`, signed with
+RS256 or ES256 by a key from `AUTH_JWKS_URL`, issued by `AUTH_ISSUER` for
+`AUTH_AUDIENCE`, and not expired. Roles are read from the `{{.RolesClaim}}` claim
+(a list, or a space-separated string).{{if .MTLSIdentity}} Callers without a token may instead
+present a client certificate (needs `TLS_CLIENT_CA_FILE`); its first URI SAN or
+common name becomes the subject, without roles.{{end}}
+{{- else}} a client certificate verified against
+`TLS_CLIENT_CA_FILE`; its first URI SAN (such as a SPIFFE id) or common name
+becomes the subject. Certificate identities carry no roles.
+{{- end}}
+
+- Missing or invalid credentials on an RPC that needs them return
+  `UNAUTHENTICATED`; a caller without a required role gets `PERMISSION_DENIED`.
+  `deny` RPCs always return `PERMISSION_DENIED`.
+- Credentials that are sent must be valid, even on public RPCs.
+- Health and reflection never need credentials, so probes and tools work;
+  turn reflection off in the spec if the API itself is confidential.
+- Handlers read the caller with `auth.FromContext(ctx)` (subject, roles,
+  source); tokens are never logged.
+{{- if .JWT}}
+- Until the key set has been fetched, calls with a token return
+  `UNAVAILABLE`; startup does not wait for the identity provider.
+
+```bash
+grpcurl -plaintext -H "authorization: Bearer $TOKEN" localhost:{{$.Port}} list
+```
+{{- end}}
+
+{{end -}}
 ## Develop
 
 ```bash
@@ -103,6 +152,9 @@ against PostgreSQL{{end}}, runs golangci-lint and govulncheck, and builds the im
 | `cmd/server` | Entry point: config, store, TLS, graceful shutdown |
 | `internal/config` | Environment configuration |
 | `internal/server` | gRPC server, interceptors, TLS, health, reflection |
+{{- if .Auth}}
+| `internal/auth` | Authentication, the access rules and `auth.FromContext` |
+{{- end}}
 | `internal/service` | Handlers, validation, acceptance and fuzz tests |
 | `internal/store` | Repository interface, in-memory store{{if .Postgres}}, PostgreSQL store and migrations{{end}} |
 {{- if .Kubernetes}}

@@ -18,6 +18,8 @@ type ExampleModel struct {
 	Request string // JSON with ${...} references
 	Expect  []ExpectModel
 	Code    string // codes.X, codes.OK when the call must succeed
+	HasAs   bool   // the example names its caller's roles
+	As      string // Go expression of those roles
 }
 
 // SeedModel is one record to create before the call.
@@ -70,7 +72,8 @@ func newExamples(s *spec.Spec) []*ExampleModel {
 	var out []*ExampleModel
 	for _, m := range s.Methods {
 		for _, ex := range m.Examples {
-			em := &ExampleModel{Method: m.Name, Name: ex.Name, Holdout: ex.Holdout, Code: "codes.OK"}
+			em := &ExampleModel{Method: m.Name, Name: ex.Name, Holdout: ex.Holdout, Code: "codes.OK",
+				HasAs: ex.As != nil, As: rolesExpr(ex.As)}
 			if ex.Error != "" {
 				em.Code = "codes." + codeNames[ex.Error]
 			}

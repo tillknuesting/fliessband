@@ -131,13 +131,10 @@ func (x *executor) stageSmoke(ctx context.Context, st *StageState) error {
 		}
 	}
 
-	method := "/grpc.health.v1.Health/Check"
-	for _, e := range model.Entities {
-		if e.HasList {
-			method = "/" + model.FullServiceName + "/List" + e.Plural
-			break
-		}
+	if err := x.smokeAuth(ctx, st, conn, model); err != nil {
+		return err
 	}
+	method := loadMethod(model)
 	rt.LoadMethod, rt.LoadCalls, rt.LoadConcurrency = method, loadCalls, loadConcurrency
 	lat, errs, elapsed := load(ctx, conn, method)
 	slices.Sort(lat)

@@ -1,0 +1,54 @@
+// Package auth identifies callers and enforces the access rules from the
+// service spec. Handlers read the caller with FromContext:
+//
+//	p, ok := auth.FromContext(ctx)
+//	if !ok {
+//		// only possible in RPCs whose rule is public
+//	}
+//	if p.HasRole("admin") { ... }
+//	owner := p.Subject // stable id of the caller, e.g. to record who did what
+//
+// The interceptors in auth.go have already rejected callers the rule does
+// not allow, so handlers only add finer checks, such as "only the owner may
+// change this record".
+package auth
+
+import (
+	"context"
+	"slices"
+)
+
+// Principal is an authenticated caller.
+type Principal struct {
+	// Subject identifies the caller: the token's sub claim, or the client
+	// certificate's first URI SAN (e.g. a SPIFFE id) or common name.
+	Subject string
+	// Roles are the caller's roles from the token's {{.Auth.RolesClaim}} claim.
+	Roles []string
+	// Source is how the caller was identified: "jwt" or "mtls".
+	Source string
+}
+
+// HasRole reports whether the caller holds role. A nil principal has none.
+func (p *Principal) HasRole(role string) bool {
+	return p != nil && slices.Contains(p.Roles, role)
+}
+
+// HasAnyRole reports whether the caller holds at least one of roles.
+func (p *Principal) HasAnyRole(roles ...string) bool {
+	return p != nil && slices.ContainsFunc(roles, p.HasRole)
+}
+
+type principalKey struct{}
+
+// FromContext returns the caller of the current RPC. ok is false for
+// anonymous callers, which only reach RPCs whose rule is public.
+func FromContext(ctx context.Context) (p *Principal, ok bool) {
+	p, ok = ctx.Value(principalKey{}).(*Principal)
+	return p, ok && p != nil
+}
+
+// NewContext returns a copy of ctx that carries p.
+func NewContext(ctx context.Context, p *Principal) context.Context {
+	return context.WithValue(ctx, principalKey{}, p)
+}

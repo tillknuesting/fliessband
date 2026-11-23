@@ -1,0 +1,29 @@
+name: notes
+module: example.com/notes
+package: notes.v1
+description: JWT auth with nested roles, an open default and one admin-only operation.
+
+auth:
+  jwt:
+    issuer: https://keycloak.example.com/realms/acme
+    audience: notes
+    jwks_url: https://keycloak.example.com/realms/acme/protocol/openid-connect/certs
+  roles_claim: realm_access.roles
+  default: public
+
+entities:
+  - name: Note
+    access: {delete: [admin]}
+    fields:
+      - {name: text, type: string, required: true, max_len: 500}
+
+methods:
+  - name: Archive
+    doc: Archives the note with the given id. NOT_FOUND if it does not exist.
+    request:
+      - {name: id, type: string, max_len: 100}
+    response:
+      - {name: note, type: Note}
+
+features:
+  health: false

@@ -1,0 +1,27 @@
+name: ledger
+module: example.com/ledger
+package: ledger.v1
+description: Service-to-service auth with client certificates only.
+
+auth:
+  mtls_identity: true
+  default: deny
+
+entities:
+  - name: Entry
+    ops: [create, get, list]
+    access: {create: authenticated, get: authenticated, list: public}
+    fields:
+      - {name: memo, type: string, max_len: 100}
+      - {name: cents, type: int64}
+
+methods:
+  - name: Balance
+    doc: Sums the cents of all entries.
+    access: authenticated
+    response:
+      - {name: cents, type: int64}
+
+features:
+  postgres: false
+  reflection: false

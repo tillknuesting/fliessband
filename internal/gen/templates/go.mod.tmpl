@@ -3,3 +3,11 @@ module {{.Module}}
 go {{.GoVersion}}
 
 toolchain {{.Toolchain}}
+{{- with .AuthRequires}}
+
+require (
+{{- range .}}
+	{{.}}
+{{- end}}
+)
+{{- end}}

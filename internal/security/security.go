@@ -33,6 +33,7 @@ func Audit(root string, s *spec.Spec, rep *metrics.Report, ran Ran) *metrics.Sec
 	a.limits()
 	a.input(s)
 	a.logging()
+	a.access(s)
 	a.container(s)
 	a.kubernetes(s)
 	a.ci(s)

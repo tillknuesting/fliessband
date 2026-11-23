@@ -51,6 +51,7 @@ var (
 	hasEntities = func(m *Model) bool { return len(m.Entities) > 0 }
 	hasPostgres = func(m *Model) bool { return m.Postgres }
 	hasMethods  = func(m *Model) bool { return len(m.Methods) > 0 }
+	hasAuth     = func(m *Model) bool { return m.Auth != nil }
 )
 
 var outputs = []output{
@@ -80,6 +81,14 @@ var outputs = []output{
 	{tmpl: "custom_test.go.tmpl", path: "internal/service/custom_test.go", when: hasMethods},
 	{tmpl: "acceptance_test.go.tmpl", path: "internal/service/acceptance_test.go", when: func(m *Model) bool { return len(m.Examples) > 0 }},
 	{tmpl: "fuzz_test.go.tmpl", path: "internal/service/fuzz_test.go", when: func(m *Model) bool { return m.AnyList() || m.AnyValidate() }},
+	{tmpl: "auth_principal.go.tmpl", path: "internal/auth/principal.go", when: hasAuth},
+	{tmpl: "auth.go.tmpl", path: "internal/auth/auth.go", when: hasAuth},
+	{tmpl: "auth_rules.go.tmpl", path: "internal/auth/rules.go", when: hasAuth},
+	{tmpl: "auth_test.go.tmpl", path: "internal/auth/auth_test.go", when: hasAuth},
+	{tmpl: "config_auth.go.tmpl", path: "internal/config/auth.go", when: func(m *Model) bool { return m.AuthJWT() }},
+	{tmpl: "config_auth_test.go.tmpl", path: "internal/config/auth_test.go", when: func(m *Model) bool { return m.AuthJWT() }},
+	{tmpl: "server_auth_test.go.tmpl", path: "internal/server/auth_test.go", when: hasAuth},
+	{tmpl: "service_auth_test.go.tmpl", path: "internal/service/auth_test.go", when: hasAuth},
 	{tmpl: "telemetry.go.tmpl", path: "internal/telemetry/telemetry.go", when: func(m *Model) bool { return m.OTel }},
 	{tmpl: "Dockerfile.tmpl", path: "Dockerfile", when: func(m *Model) bool { return m.Docker }},
 	{tmpl: "dockerignore.tmpl", path: ".dockerignore", when: func(m *Model) bool { return m.Docker }},
@@ -123,7 +132,7 @@ type data struct {
 // File is the base name used for an entity's handler and test files.
 func (e *EntityModel) File() string {
 	switch e.Snake {
-	case "service", "custom", "acceptance", "fuzz":
+	case "service", "custom", "acceptance", "fuzz", "auth":
 		return e.Snake + "_entity"
 	}
 	return e.Snake

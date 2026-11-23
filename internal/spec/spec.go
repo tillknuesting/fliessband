@@ -23,6 +23,7 @@ type Spec struct {
 	Entities    []Entity `yaml:"entities" json:"entities"`
 	Methods     []Method `yaml:"methods" json:"methods"`
 	Features    Features `yaml:"features" json:"features"`
+	Auth        *Auth    `yaml:"auth" json:"auth,omitempty"`
 }
 
 // Entity is a resource with generated CRUD RPCs.
@@ -32,6 +33,8 @@ type Entity struct {
 	Doc    string   `yaml:"doc" json:"doc"`
 	Fields []Field  `yaml:"fields" json:"fields"`
 	Ops    []string `yaml:"ops" json:"ops"`
+	// Access maps operations to rules; see Auth.
+	Access map[string]Access `yaml:"access" json:"access,omitempty"`
 }
 
 // Field is a message field. Type is a proto scalar, "timestamp", or (in
@@ -59,6 +62,7 @@ type Method struct {
 	Request  []Field   `yaml:"request" json:"request"`
 	Response []Field   `yaml:"response" json:"response"`
 	Examples []Example `yaml:"examples" json:"examples,omitempty"`
+	Access   *Access   `yaml:"access" json:"access,omitempty"` // see Auth
 }
 
 // Example is an acceptance example for a custom method: records to seed, a
@@ -77,6 +81,10 @@ type Example struct {
 	Expect  map[string]any              `yaml:"expect" json:"expect,omitempty"`
 	Error   string                      `yaml:"error" json:"error,omitempty"`
 	Holdout bool                        `yaml:"holdout" json:"holdout,omitempty"`
+	// As names the roles of the caller when the service has auth: []
+	// is a signed-in caller without roles. Unset means a caller holding
+	// every role the spec names.
+	As []string `yaml:"as" json:"as,omitempty"`
 }
 
 // Features toggles optional parts of the generated service.
@@ -169,6 +177,7 @@ func (s *Spec) applyDefaults() {
 			e.Ops = slices.Clone(AllOps)
 		}
 	}
+	s.applyAuthDefaults()
 }
 
 var (
@@ -303,7 +312,7 @@ func (s *Spec) Validate() []Problem {
 			ps = append(ps, s.validateExample(ep, m, ex)...)
 		}
 	}
-	return ps
+	return append(ps, s.validateAuth()...)
 }
 
 func validateField(p string, f Field, inMethod bool, entities map[string]bool) []Problem {

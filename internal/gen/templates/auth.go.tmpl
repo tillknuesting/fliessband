@@ -1,0 +1,369 @@
+package auth
+
+import (
+	"context"
+	"errors"
+	"log/slog"
+	"net/http"
+	"strings"
+	"sync/atomic"
+	"time"
+
+	"github.com/MicahParks/keyfunc/v3"
+	"github.com/golang-jwt/jwt/v5"
+	"golang.org/x/time/rate"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/peer"
+	"google.golang.org/grpc/status"
+)
+
+// Rule is the access rule of one RPC. The zero value is Authenticated, so
+// a rule that was never set fails closed.
+type Rule struct {
+	kind  ruleKind
+	roles []string
+}
+
+type ruleKind int
+
+const (
+	kindAuthenticated ruleKind = iota
+	kindPublic
+	kindDeny
+	kindRoles
+)
+
+// The rules an RPC can have.
+var (
+	// Public admits every caller, with or without credentials. Credentials
+	// that are sent must still be valid.
+	Public = Rule{kind: kindPublic}
+	// Authenticated admits any caller with a valid identity.
+	Authenticated = Rule{kind: kindAuthenticated}
+	// Deny admits nobody.
+	Deny = Rule{kind: kindDeny}
+)
+
+// Roles admits callers that hold at least one of roles.
+func Roles(roles ...string) Rule { return Rule{kind: kindRoles, roles: roles} }
+
+// String describes the rule.
+func (r Rule) String() string {
+	switch r.kind {
+	case kindPublic:
+		return "public"
+	case kindDeny:
+		return "deny"
+	case kindRoles:
+		return "roles " + strings.Join(r.roles, ", ")
+	}
+	return "authenticated"
+}
+
+// alwaysPublic reports whether method belongs to the health or reflection
+// service. Health stays open because probes and load balancers carry no
+// credentials; reflection stays open so that tools can list the API (turn
+// it off with features.reflection: false). Neither reaches application data.
+func alwaysPublic(method string) bool {
+	return strings.HasPrefix(method, "/grpc.health.v1.Health/") ||
+		strings.HasPrefix(method, "/grpc.reflection.v1.ServerReflection/") ||
+		strings.HasPrefix(method, "/grpc.reflection.v1alpha.ServerReflection/")
+}
+
+// RuleFor returns the rule of a full method name such as
+// "/pkg.Service/Method": its entry in Rules, or DefaultRule.
+func RuleFor(method string) Rule {
+	if alwaysPublic(method) {
+		return Public
+	}
+	if r, ok := Rules[method]; ok {
+		return r
+	}
+	return DefaultRule
+}
+
+// Config configures an Authorizer.
+type Config struct {
+{{- if .Auth.JWT}}
+	// Issuer and Audience must match the token's iss and aud claims.
+	Issuer, Audience string
+	// JWKSURL is the identity provider's JSON Web Key Set. Keys are cached,
+	// refreshed every Refresh, and re-fetched (at most every 30s) when a
+	// token names a key id the cache does not have, so key rotation works.
+	JWKSURL string
+	// Refresh is how often the key set is fetched again (default 1h).
+	Refresh time.Duration
+	// Leeway allows for clock skew when checking exp and nbf.
+	Leeway time.Duration
+	// RolesClaim is the claim holding the roles; dots reach into nested
+	// objects. Empty means the claim named in the spec.
+	RolesClaim string
+	// Keyfunc, when set, verifies tokens with fixed keys instead of
+	// fetching JWKSURL, for tests.
+	Keyfunc jwt.Keyfunc
+{{- end}}
+	// MTLSIdentity identifies callers without a token by their verified
+	// client certificate (needs TLS_CLIENT_CA_FILE).
+	MTLSIdentity bool
+}
+
+// Authorizer authenticates callers and enforces Rules.
+type Authorizer struct {
+	cfg Config
+{{- if .Auth.JWT}}
+	parser *jwt.Parser
+	keys   atomic.Pointer[jwt.Keyfunc]
+{{- end}}
+}
+{{- if .Auth.JWT}}
+
+// maxJWTBytes bounds the tokens the server parses; real tokens are far
+// smaller.
+const maxJWTBytes = 8 << 10
+{{- end}}
+
+// New returns an Authorizer.{{if .Auth.JWT}} The key set is fetched in the background:
+// until it arrives, calls with a token fail with UNAVAILABLE, so a slow
+// identity provider delays authenticated calls instead of startup. ctx ends
+// the background refresh.{{end}}
+func New(ctx context.Context, cfg Config, log *slog.Logger) *Authorizer {
+	a := &Authorizer{cfg: cfg}
+{{- if .Auth.JWT}}
+	if a.cfg.RolesClaim == "" {
+		a.cfg.RolesClaim = RolesClaim
+	}
+	// Only asymmetric algorithms: a shared-secret (HS256) or unsigned
+	// ("none") token can never pass, whatever its header claims.
+	a.parser = jwt.NewParser(
+		jwt.WithValidMethods([]string{"RS256", "ES256"}),
+		jwt.WithIssuer(cfg.Issuer),
+		jwt.WithAudience(cfg.Audience),
+		jwt.WithExpirationRequired(),
+		jwt.WithLeeway(cfg.Leeway),
+	)
+	switch {
+	case cfg.Keyfunc != nil:
+		a.keys.Store(&cfg.Keyfunc)
+	case cfg.JWKSURL != "":
+		go a.loadKeys(ctx, log)
+	}
+{{- else}}
+	_, _ = ctx, log
+{{- end}}
+	return a
+}
+{{- if .Auth.JWT}}
+
+// loadKeys starts the cached, self-refreshing key set.
+func (a *Authorizer) loadKeys(ctx context.Context, log *slog.Logger) {
+	k, err := keyfunc.NewDefaultOverrideCtx(ctx, []string{a.cfg.JWKSURL}, keyfunc.Override{
+		Client:            &http.Client{Timeout: 10 * time.Second},
+		HTTPTimeout:       10 * time.Second,
+		RefreshInterval:   a.cfg.Refresh, // 0 means keyfunc's default, 1h
+		RefreshUnknownKID: rate.NewLimiter(rate.Every(30*time.Second), 1),
+		RateLimitWaitMax:  time.Millisecond, // tokens with unknown key ids fail fast instead of queueing
+		RefreshErrorHandlerFunc: func(u string) func(context.Context, error) {
+			return func(ctx context.Context, err error) {
+				log.WarnContext(ctx, "cannot fetch the JWKS", "url", u, "err", err)
+			}
+		},
+	})
+	if err != nil {
+		log.ErrorContext(ctx, "JWKS client", "url", a.cfg.JWKSURL, "err", err)
+		return
+	}
+	var kf jwt.Keyfunc = k.Keyfunc
+	a.keys.Store(&kf)
+}
+
+// Ready reports whether the key set has been fetched once (successfully or
+// not; failures are logged and retried).
+func (a *Authorizer) Ready() bool { return a.keys.Load() != nil }
+{{- end}}
+
+// Unary enforces the rules on unary RPCs and puts the caller into the
+// context (see FromContext).
+func (a *Authorizer) Unary() grpc.UnaryServerInterceptor {
+	if a == nil {
+		a = &Authorizer{}
+	}
+	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
+		ctx, err := a.authorize(ctx, info.FullMethod)
+		if err != nil {
+			return nil, err
+		}
+		return handler(ctx, req)
+	}
+}
+
+// Stream enforces the rules on streaming RPCs.
+func (a *Authorizer) Stream() grpc.StreamServerInterceptor {
+	if a == nil {
+		a = &Authorizer{}
+	}
+	return func(srv any, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
+		ctx, err := a.authorize(ss.Context(), info.FullMethod)
+		if err != nil {
+			return err
+		}
+		return handler(srv, &principalStream{ServerStream: ss, ctx: ctx})
+	}
+}
+
+type principalStream struct {
+	grpc.ServerStream
+	ctx context.Context
+}
+
+func (s *principalStream) Context() context.Context { return s.ctx }
+
+// authorize answers UNAUTHENTICATED when the RPC needs an identity and the
+// caller has none or a bad one, and PERMISSION_DENIED when the identity
+// lacks the roles the rule asks for.
+func (a *Authorizer) authorize(ctx context.Context, method string) (context.Context, error) {
+	if alwaysPublic(method) {
+		return ctx, nil
+	}
+	rule := RuleFor(method)
+	if rule.kind == kindDeny {
+		return ctx, status.Error(codes.PermissionDenied, "this RPC is not open to any caller")
+	}
+	p, err := a.authenticate(ctx)
+	if err != nil {
+		return ctx, err
+	}
+	if p != nil {
+		ctx = NewContext(ctx, p)
+	}
+	switch {
+	case rule.kind == kindPublic:
+		return ctx, nil
+	case p == nil:
+		return ctx, status.Error(codes.Unauthenticated, "this RPC needs credentials: send authorization: Bearer <token>")
+	case rule.kind == kindRoles && !p.HasAnyRole(rule.roles...):
+		return ctx, status.Error(codes.PermissionDenied, "the caller lacks every role this RPC accepts")
+	}
+	return ctx, nil
+}
+
+// authenticate returns the caller, or nil for an anonymous one. Credentials
+// that are present but invalid are an error, never anonymity.
+func (a *Authorizer) authenticate(ctx context.Context) (*Principal, error) {
+	md, _ := metadata.FromIncomingContext(ctx)
+	vals := md.Get("authorization")
+	switch len(vals) {
+	case 0:
+		if a.cfg.MTLSIdentity {
+			return peerPrincipal(ctx), nil
+		}
+		return nil, nil
+	case 1:
+	default:
+		return nil, status.Error(codes.Unauthenticated, "send one authorization header")
+	}
+	scheme, raw, ok := strings.Cut(vals[0], " ")
+	if !ok || !strings.EqualFold(scheme, "bearer") || raw == "" {
+		return nil, status.Error(codes.Unauthenticated, "authorization must be Bearer <token>")
+	}
+{{- if .Auth.JWT}}
+	return a.verify(raw)
+}
+
+// verify checks the token's signature against the key set, its algorithm,
+// exp and nbf (with leeway), iss and aud, and reads subject and roles.
+// Errors name the reason but never echo the token.
+func (a *Authorizer) verify(raw string) (*Principal, error) {
+	if len(raw) > maxJWTBytes {
+		return nil, status.Error(codes.Unauthenticated, "invalid token: too large")
+	}
+	kf := a.keys.Load()
+	if a.parser == nil || kf == nil {
+		return nil, status.Error(codes.Unavailable, "the signing keys are not available yet; retry with backoff")
+	}
+	claims := jwt.MapClaims{}
+	if _, err := a.parser.ParseWithClaims(raw, claims, *kf); err != nil {
+		return nil, status.Error(codes.Unauthenticated, "invalid token: "+reason(err))
+	}
+	sub, err := claims.GetSubject()
+	if err != nil || sub == "" {
+		return nil, status.Error(codes.Unauthenticated, "invalid token: no subject")
+	}
+	return &Principal{Subject: sub, Roles: rolesFrom(claims, a.cfg.RolesClaim), Source: "jwt"}, nil
+}
+
+// reason turns a verification error into a short, fixed phrase.
+func reason(err error) string {
+	switch {
+	case errors.Is(err, jwt.ErrTokenExpired):
+		return "expired"
+	case errors.Is(err, jwt.ErrTokenNotValidYet), errors.Is(err, jwt.ErrTokenUsedBeforeIssued):
+		return "not valid yet"
+	case errors.Is(err, jwt.ErrTokenInvalidAudience):
+		return "wrong audience"
+	case errors.Is(err, jwt.ErrTokenInvalidIssuer):
+		return "wrong issuer"
+	case errors.Is(err, jwt.ErrTokenRequiredClaimMissing):
+		return "a required claim is missing"
+	case errors.Is(err, jwt.ErrTokenMalformed):
+		return "malformed"
+	case errors.Is(err, jwt.ErrTokenSignatureInvalid), errors.Is(err, jwt.ErrTokenUnverifiable):
+		return "signature not verified"
+	}
+	return "rejected"
+}
+
+// rolesFrom reads the roles at a dotted claim path. A list keeps its
+// strings; a string is split on spaces, as OAuth scopes are.
+func rolesFrom(claims jwt.MapClaims, path string) []string {
+	var v any = map[string]any(claims)
+	for part := range strings.SplitSeq(path, ".") {
+		m, ok := v.(map[string]any)
+		if !ok {
+			return nil
+		}
+		v = m[part]
+	}
+	switch t := v.(type) {
+	case string:
+		return strings.Fields(t)
+	case []any:
+		out := make([]string, 0, len(t))
+		for _, el := range t {
+			if s, ok := el.(string); ok && s != "" {
+				out = append(out, s)
+			}
+		}
+		return out
+	}
+	return nil
+}
+{{- else}}
+	return nil, status.Error(codes.Unauthenticated, "bearer tokens are not accepted; present a client certificate")
+}
+{{- end}}
+
+// peerPrincipal identifies the caller by its verified client certificate:
+// the first URI SAN (such as a SPIFFE id), else the common name. Certificate
+// identities carry no roles, so they pass authenticated rules only.
+func peerPrincipal(ctx context.Context) *Principal {
+	p, ok := peer.FromContext(ctx)
+	if !ok {
+		return nil
+	}
+	info, ok := p.AuthInfo.(credentials.TLSInfo)
+	if !ok || len(info.State.VerifiedChains) == 0 || len(info.State.VerifiedChains[0]) == 0 {
+		return nil
+	}
+	leaf := info.State.VerifiedChains[0][0]
+	subject := leaf.Subject.CommonName
+	if len(leaf.URIs) > 0 {
+		subject = leaf.URIs[0].String()
+	}
+	if subject == "" {
+		return nil
+	}
+	return &Principal{Subject: subject, Source: "mtls"}
+}

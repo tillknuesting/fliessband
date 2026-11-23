@@ -1,0 +1,61 @@
+package server
+
+import (
+	"testing"
+	"time"
+
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials/insecure"
+	healthpb "google.golang.org/grpc/health/grpc_health_v1"
+	reflectionpb "google.golang.org/grpc/reflection/grpc_reflection_v1"
+	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/emptypb"
+
+	pb "{{.GoPkgPath}}"
+	"{{.Module}}/internal/auth"
+)
+
+// TestAuthIsWired checks that the server enforces the access rules on its
+// RPCs, while health and reflection stay open to callers without a token.
+// The authorizer has no keys and a nil one fails closed, so only rules that
+// need no identity can pass.
+func TestAuthIsWired(t *testing.T) {
+	for name, authz := range map[string]*auth.Authorizer{
+		"authorizer": auth.New(t.Context(), auth.Config{}, discard),
+		"nil":        nil,
+	} {
+		t.Run(name, func(t *testing.T) {
+			s := New(discard, pb.Unimplemented{{.ServiceName}}Server{}, Options{Auth: authz})
+			defer s.Shutdown(0, time.Second)
+			conn := serve(t, s, insecure.NewCredentials())
+{{- with .Auth.ProtectedRPC}}
+			if err := conn.Invoke(t.Context(), {{printf "%q" .Method}}, &emptypb.Empty{}, &emptypb.Empty{}); status.Code(err) != codes.Unauthenticated {
+				t.Errorf("{{.RPC}} without a token: %v, want Unauthenticated", err)
+			}
+{{- end}}
+{{- with .Auth.PublicRPC}}
+			if err := conn.Invoke(t.Context(), {{printf "%q" .Method}}, &emptypb.Empty{}, &emptypb.Empty{}); status.Code(err) != codes.Unimplemented {
+				t.Errorf("public {{.RPC}} without a token: %v, want it to reach the handler", err)
+			}
+{{- end}}
+{{- if .Health}}
+			if got := healthOf(t, conn, ""); got != healthpb.HealthCheckResponse_SERVING {
+				t.Errorf("health without a token = %v, want SERVING", got)
+			}
+{{- end}}
+{{- if .Reflection}}
+			stream, err := reflectionpb.NewServerReflectionClient(conn).ServerReflectionInfo(t.Context())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := stream.Send(&reflectionpb.ServerReflectionRequest{MessageRequest: &reflectionpb.ServerReflectionRequest_ListServices{ListServices: "*"} }); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := stream.Recv(); err != nil {
+				t.Errorf("reflection without a token: %v", err)
+			}
+			_ = stream.CloseSend()
+{{- end}}
+		})
+	}
+}

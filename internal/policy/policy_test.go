@@ -28,10 +28,12 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	pb "example.com/tasks/gen/tasks/v1"
+	"example.com/tasks/internal/auth"
 	"example.com/tasks/internal/store"
 )
 
 var _ = store.ErrNotFound
+var _ = auth.FromContext
 var _ = slices.Contains[[]int]
 var _ = timestamppb.Now
 
