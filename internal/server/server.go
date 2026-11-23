@@ -361,6 +361,7 @@ type validation struct {
 	Holdout  int            `json:"holdout"`
 	Files    int            `json:"files,omitempty"`
 	Proto    string         `json:"proto,omitempty"`
+	Outline  *outline       `json:"outline,omitempty"`
 }
 
 func (a *api) validate(w http.ResponseWriter, r *http.Request) {
@@ -383,6 +384,7 @@ func (a *api) validate(w http.ResponseWriter, r *http.Request) {
 	if v.OK {
 		m := gen.NewModel(s)
 		v.Service = m.FullServiceName
+		v.Outline = buildOutline(s)
 		for _, e := range s.Entities {
 			v.RPCs = append(v.RPCs, e.RPCNames()...)
 		}

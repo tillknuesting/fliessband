@@ -90,7 +90,14 @@ export interface Summary {
 
 export interface Validation {
   ok: boolean; error?: string; problems: { path: string; message: string; warning: boolean }[]
-  service?: string; rpcs?: string[]; examples: number; holdout: number; files?: number; proto?: string
+  service?: string; rpcs?: string[]; examples: number; holdout: number; files?: number; proto?: string; outline?: Outline
+}
+
+export interface OutlineField { name: string; type: string; repeated?: boolean; required?: boolean; unique?: boolean }
+export interface Outline {
+  entities: { name: string; doc?: string; fields: OutlineField[]; rpcs: string[] }[]
+  methods: { name: string; doc?: string; request: OutlineField[]; response: OutlineField[]; touches: string[]; examples: number; holdout: number }[]
+  features: string[]
 }
 
 export interface Tool { name: string; version: string; found: boolean }

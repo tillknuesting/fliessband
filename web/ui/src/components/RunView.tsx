@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Ban, CircleCheck, CircleX, Download, LoaderCircle, Square } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -7,8 +7,9 @@ import { api } from '@/lib/api'
 import { ms } from '@/lib/format'
 import { LINE } from '@/lib/stages'
 import { cn } from '@/lib/utils'
-import type { Run, Validation } from '@/lib/types'
-import { Conveyor, StationDetail } from './Conveyor'
+import type { Run, Stage, Validation } from '@/lib/types'
+import { Conveyor, StationDetail, remaining } from './Conveyor'
+import { Blueprint } from './Blueprint'
 import { Measurements } from './Measurements'
 import { CodeView, ContractView, LogView } from './Views'
 import { ErrorBoundary } from './ErrorBoundary'
@@ -20,8 +21,30 @@ const PILL = {
   canceled: { word: 'Stopped', icon: Ban, cls: 'text-muted-foreground', spin: false },
 } as const
 
+const dur = (ms: number) => {
+  const s = Math.round(ms / 1000)
+  return s < 60 ? `${s} s` : `${Math.floor(s / 60)} min ${String(s % 60).padStart(2, '0')} s`
+}
+
+/** A running line's clock: stations done, time so far, a rough estimate of what is left. */
+function LineClock({ stages, started }: { stages: Stage[]; started: string }) {
+  const [now, setNow] = useState(Date.now())
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 250)
+    return () => clearInterval(t)
+  }, [])
+  const done = stages.filter((s) => s.status !== 'pending' && s.status !== 'running').length
+  const left = remaining(stages, now)
+  return (
+    <span className="text-sm text-muted-foreground tabular-nums">
+      Station {Math.min(done + 1, stages.length)} of {stages.length}, {dur(now - new Date(started).getTime())} so far
+      {left > 1000 && <>, about {dur(left)} left</>}
+    </span>
+  )
+}
+
 export function RunView({ run, error, validation }: { run: Run | null; error: string | null; validation: Validation | null }) {
-  const [tab, setTab] = useState('measure')
+  const [tab, setTab] = useState('service')
   const [selected, setSelected] = useState<string | undefined>()
   const [open, setOpen] = useState<{ path: string; line?: number } | null>(null)
   const [stopping, setStopping] = useState(false)
@@ -54,9 +77,13 @@ export function RunView({ run, error, validation }: { run: Run | null; error: st
                   {pill.word}
                 </Badge>
               )}
-              <span className="text-sm text-muted-foreground">
-                Started {new Date(run.created_at).toLocaleTimeString()}, {ms(total)} on the line{run.options?.llm ? ', LLM on' : ''}
-              </span>
+              {run.status === 'running' ? (
+                <LineClock stages={run.stages} started={run.created_at} />
+              ) : (
+                <span className="text-sm text-muted-foreground">
+                  Started {new Date(run.created_at).toLocaleTimeString()}, {ms(total)} on the line{run.options?.llm ? ', LLM on' : ''}
+                </span>
+              )}
               <div className="ml-auto flex flex-wrap gap-2">
                 {run.status === 'running' ? (
                   <Button
@@ -107,11 +134,17 @@ export function RunView({ run, error, validation }: { run: Run | null; error: st
         <StationDetail stage={current} />
         <Tabs value={tab} onValueChange={setTab}>
           <TabsList>
+            <TabsTrigger value="service">Service</TabsTrigger>
             <TabsTrigger value="measure">Measurements</TabsTrigger>
             <TabsTrigger value="code">Code</TabsTrigger>
             <TabsTrigger value="log">Log</TabsTrigger>
             <TabsTrigger value="contract">Contract</TabsTrigger>
           </TabsList>
+          <TabsContent value="service" className="pt-2">
+            <ErrorBoundary label="service blueprint">
+              <Blueprint run={run} validation={validation} open={openFile} />
+            </ErrorBoundary>
+          </TabsContent>
           <TabsContent value="measure" className="pt-2">
             {run ? (
               <ErrorBoundary label="measurements" key={run.id + run.status}>
