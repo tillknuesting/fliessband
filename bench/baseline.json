@@ -1,0 +1,176 @@
+{
+  "format": 1,
+  "created_at": "2026-11-23T22:49:52Z",
+  "factory_version": "0.2.0",
+  "go_version": "go1.27.4",
+  "platform": "darwin/arm64",
+  "repeat": 1,
+  "runs": [
+    {
+      "spec": "bookings",
+      "model": "template",
+      "repeat": 1,
+      "run_id": "20261123-224718-d0b5",
+      "status": "passed",
+      "score": 80.4,
+      "grade": "B",
+      "holdout_passed": 0,
+      "holdout_total": 1,
+      "visible_passed": 0,
+      "visible_total": 2,
+      "mutation_score": 0.898,
+      "coverage": 70.5,
+      "security": [
+        26,
+        5,
+        0
+      ],
+      "cost_usd": 0,
+      "duration_ms": 103775
+    },
+    {
+      "spec": "inventory",
+      "model": "template",
+      "repeat": 1,
+      "run_id": "20261123-224718-9db8",
+      "status": "passed",
+      "score": 79.4,
+      "grade": "C",
+      "holdout_passed": 0,
+      "holdout_total": 2,
+      "visible_passed": 0,
+      "visible_total": 6,
+      "mutation_score": 0.8986,
+      "coverage": 72,
+      "security": [
+        26,
+        5,
+        0
+      ],
+      "cost_usd": 0,
+      "duration_ms": 101110
+    },
+    {
+      "spec": "tasks",
+      "model": "template",
+      "repeat": 1,
+      "run_id": "20261123-224859-5e53",
+      "status": "passed",
+      "score": 80,
+      "grade": "B",
+      "holdout_passed": 0,
+      "holdout_total": 1,
+      "visible_passed": 0,
+      "visible_total": 2,
+      "mutation_score": 0.8819,
+      "coverage": 74,
+      "security": [
+        26,
+        5,
+        0
+      ],
+      "cost_usd": 0,
+      "duration_ms": 52694
+    }
+  ],
+  "by_spec_model": [
+    {
+      "spec": "bookings",
+      "model": "template",
+      "runs": 1,
+      "passed": 1,
+      "pass_rate": 1,
+      "mean_score": 80.4,
+      "min_score": 80.4,
+      "holdout_passed": 0,
+      "holdout_total": 1,
+      "holdout_pass_rate": 0,
+      "mean_cost_usd": 0,
+      "mean_duration_ms": 103775
+    },
+    {
+      "spec": "inventory",
+      "model": "template",
+      "runs": 1,
+      "passed": 1,
+      "pass_rate": 1,
+      "mean_score": 79.4,
+      "min_score": 79.4,
+      "holdout_passed": 0,
+      "holdout_total": 2,
+      "holdout_pass_rate": 0,
+      "mean_cost_usd": 0,
+      "mean_duration_ms": 101110
+    },
+    {
+      "spec": "tasks",
+      "model": "template",
+      "runs": 1,
+      "passed": 1,
+      "pass_rate": 1,
+      "mean_score": 80,
+      "min_score": 80,
+      "holdout_passed": 0,
+      "holdout_total": 1,
+      "holdout_pass_rate": 0,
+      "mean_cost_usd": 0,
+      "mean_duration_ms": 52694
+    }
+  ],
+  "by_spec": [
+    {
+      "spec": "bookings",
+      "runs": 1,
+      "passed": 1,
+      "pass_rate": 1,
+      "mean_score": 80.4,
+      "min_score": 80.4,
+      "holdout_passed": 0,
+      "holdout_total": 1,
+      "holdout_pass_rate": 0,
+      "mean_cost_usd": 0,
+      "mean_duration_ms": 103775
+    },
+    {
+      "spec": "inventory",
+      "runs": 1,
+      "passed": 1,
+      "pass_rate": 1,
+      "mean_score": 79.4,
+      "min_score": 79.4,
+      "holdout_passed": 0,
+      "holdout_total": 2,
+      "holdout_pass_rate": 0,
+      "mean_cost_usd": 0,
+      "mean_duration_ms": 101110
+    },
+    {
+      "spec": "tasks",
+      "runs": 1,
+      "passed": 1,
+      "pass_rate": 1,
+      "mean_score": 80,
+      "min_score": 80,
+      "holdout_passed": 0,
+      "holdout_total": 1,
+      "holdout_pass_rate": 0,
+      "mean_cost_usd": 0,
+      "mean_duration_ms": 52694
+    }
+  ],
+  "by_model": [
+    {
+      "model": "template",
+      "runs": 3,
+      "passed": 3,
+      "pass_rate": 1,
+      "mean_score": 79.93,
+      "min_score": 79.4,
+      "holdout_passed": 0,
+      "holdout_total": 4,
+      "holdout_pass_rate": 0,
+      "mean_cost_usd": 0,
+      "mean_duration_ms": 85860
+    }
+  ]
+}

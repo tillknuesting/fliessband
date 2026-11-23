@@ -246,6 +246,30 @@ that changed between two versions.
   Dockerfile and a golangci-lint config.
 - Configuration by environment variable, listed in the service's own README.
 
+## Benchmark
+
+`fliessband bench` measures the factory itself, so a change to a prompt, a
+template or a model can be shown to be better or worse instead of argued.
+It runs every spec with every model, `-repeat` times, through the normal
+line (each run in its own data directory, so no run is another's
+compatibility baseline), then prints markdown tables and writes a results
+JSON: per run the status, failed station, score and grade, holdout and
+visible examples, mutation score, coverage, security checks, cost and time,
+and per spec and per model the pass rate (all gates), mean and minimum
+score, holdout pass rate, mean cost and mean time.
+
+```bash
+make bench            # template-only, all example specs, against bench/baseline.json
+make bench-baseline   # rerun and make the result the new baseline
+./.tools/fliessband bench -models template,deepseek-chat -repeat 3 -parallel 2 \
+  -out data/bench/llm.json -baseline data/bench/before.json
+```
+
+With `-baseline` the command exits non-zero, listing what regressed, when a
+spec and model's mean score drops by more than `-max-regression` points
+(default 3) or its pass rate drops. In `-models`, `template` means no LLM.
+LLM runs vary, so compare them with `-repeat` of 3 or more.
+
 ## Running it for a team
 
 ```bash
@@ -286,7 +310,7 @@ source.
 
 | Path | Contents |
 |---|---|
-| `cmd/fliessband` | CLI: `serve`, `run`, `gen`, `version` |
+| `cmd/fliessband` | CLI: `serve`, `run`, `gen`, `bench`, `version` |
 | `internal/spec` | spec types, examples, defaults, validation |
 | `internal/gen` | templates, renderer, PostgreSQL mapping, manifest |
 | `internal/pipeline` | stations, gates, repair and hardening loops, sandboxing, Docker, smoke test |
@@ -294,6 +318,7 @@ source.
 | `internal/mutate` | mutation testing with `go test -overlay` |
 | `internal/supply` | SBOM and provenance |
 | `internal/metrics` | AST analysis, coverage, tests, score |
+| `internal/bench` | benchmark results, aggregates and baseline comparison |
 | `internal/llm` | OpenAI-compatible client, prompts, file guardrail |
 | `internal/server` | HTTP API, server-sent events, security middleware |
 | `web/ui`, `web/static` | UI source and its embedded build |

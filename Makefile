@@ -1,4 +1,4 @@
-.PHONY: tools ui build test test-short lint serve run docker clean
+.PHONY: tools ui build test test-short lint serve run bench bench-baseline docker clean
 
 TOOLS := $(CURDIR)/.tools/bin
 
@@ -40,6 +40,12 @@ serve: build
 
 run: build ## make run SPEC=specs/inventory.yaml
 	./.tools/fliessband run $(SPEC)
+
+bench: build ## benchmark the factory (template-only, all example specs) against bench/baseline.json
+	./.tools/fliessband bench -specs 'specs/*.yaml' -out data/bench/results.json -baseline bench/baseline.json
+
+bench-baseline: build ## rerun the template-only benchmark and make it the new baseline
+	./.tools/fliessband bench -specs 'specs/*.yaml' -out bench/baseline.json
 
 docker:
 	docker build -t fliessband:dev .

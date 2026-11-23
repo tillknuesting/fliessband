@@ -201,6 +201,15 @@ a run did not measure (no examples, no baseline, mutation off) are left out and
 the total is scaled over the rest, so runs with different options stay
 comparable. A failed gate caps the score at 40.
 
+The factory is measured the same way. `fliessband bench` runs the example
+specs (optionally with several models and repeats) through the unchanged
+line and aggregates the reports per spec and model: pass rate, mean and
+minimum score, holdout pass rate, cost and time. A checked-in template-only
+baseline (`bench/baseline.json`) turns that into a regression gate: a change
+to templates, prompts or models fails `make bench` when a spec's mean score
+drops by more than three points or its pass rate drops. Holdouts matter most
+here, because they are the one signal a prompt change cannot tune towards.
+
 ## 8. Not done yet
 
 - protovalidate (v1.0 since September 2025) annotations, so clients in other

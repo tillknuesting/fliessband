@@ -3,6 +3,7 @@
 //	fliessband serve            start the web UI (default 127.0.0.1:7070)
 //	fliessband run SPEC.yaml    run a spec through the line in the terminal
 //	fliessband gen -o DIR SPEC  only render the templates
+//	fliessband bench            benchmark the factory on the example specs
 package main
 
 import (
@@ -40,6 +41,8 @@ func main() {
 		err = runCmd(os.Args[2:])
 	case "gen":
 		err = genCmd(os.Args[2:])
+	case "bench":
+		err = benchCmd(os.Args[2:])
 	case "version":
 		fmt.Println("fliessband", pipeline.Version)
 	default:
@@ -56,6 +59,8 @@ func usage() {
   fliessband serve [-addr 127.0.0.1:7070] [-data data]   start the web UI
   fliessband run [-llm] [-mutation=true] SPEC.yaml       run a spec through the line
   fliessband gen -o DIR SPEC.yaml                        only render the templates
+  fliessband bench [-specs GLOB] [-models a,b] [-repeat N] [-baseline FILE]
+                                                         benchmark the factory itself
   fliessband version
 
 environment:
