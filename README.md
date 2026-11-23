@@ -56,7 +56,7 @@ make tools   # pinned buf, protoc plugins, golangci-lint, staticcheck, govulnche
 make serve   # UI on http://127.0.0.1:7070
 ```
 
-Pick an example spec in the UI and press **Run the line**. Or from the terminal:
+Pick an example spec in the UI and press **Run the line**. The UI is keyboard-first: ⌘K opens the command menu, ⌘↵ runs the line, `[` hides the spec, and `G` then `H` or `L` switches between history and the line. Or from the terminal:
 
 ```bash
 make run SPEC=specs/inventory.yaml

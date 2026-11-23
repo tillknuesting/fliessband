@@ -38,7 +38,7 @@ export function History({ runs }: { runs: Summary[] }) {
                 <XAxis dataKey="id" hide />
                 <YAxis domain={[0, 100]} ticks={[0, 50, 100]} width={30} tickLine={false} axisLine={false} fontSize={11} />
                 <ChartTooltip content={<ChartTooltipContent labelFormatter={(_, p) => p?.[0]?.payload?.label} />} />
-                <Line dataKey="score" stroke="var(--color-score)" strokeWidth={2} dot={{ r: 4, fill: 'var(--color-score)', strokeWidth: 2, stroke: 'var(--card)' }} activeDot={{ r: 6 }} />
+                <Line isAnimationActive={false} dataKey="score" stroke="var(--color-score)" strokeWidth={2} dot={{ r: 4, fill: 'var(--color-score)', strokeWidth: 2, stroke: 'var(--card)' }} activeDot={{ r: 6 }} />
               </LineChart>
             </ChartContainer>
           </div>

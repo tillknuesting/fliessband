@@ -20,10 +20,10 @@ export const LINE: Stage[] = def.map(([id, name, tool, gate, phase]) => ({
 }))
 
 export const SHORT: Record<string, string> = {
-  spec: 'Spec', scaffold: 'Scaffold', protolint: 'Proto', breaking: 'Compat', codegen: 'Codegen', implement: 'Implement',
+  spec: 'Spec', scaffold: 'Tmpl', protolint: 'Proto', breaking: 'Break', codegen: 'Gen', implement: 'Impl',
   policy: 'Policy', deps: 'Deps', build: 'Build', vet: 'Vet', lint: 'Lint', staticcheck: 'Static', test: 'Test',
-  acceptance: 'Accept', review: 'Review', mutation: 'Mutants', fuzz: 'Fuzz', vulncheck: 'Vulns', integration: 'Postgres', smoke: 'Smoke',
-  sbom: 'SBOM', measure: 'Measure',
+  acceptance: 'Accept', review: 'Review', mutation: 'Mutate', fuzz: 'Fuzz', vulncheck: 'Vulns', integration: 'DB', smoke: 'Smoke',
+  sbom: 'SBOM', measure: 'Score',
 }
 
 export const STATUS_WORD: Record<Status, string> = {

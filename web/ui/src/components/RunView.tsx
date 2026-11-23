@@ -2,7 +2,6 @@ import { useState } from 'react'
 import { Ban, CircleCheck, CircleX, Download, LoaderCircle, Square } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { Card, CardContent } from '@/components/ui/card'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { api } from '@/lib/api'
 import { ms } from '@/lib/format'
@@ -16,8 +15,8 @@ import { ErrorBoundary } from './ErrorBoundary'
 
 const PILL = {
   running: { word: 'Running', icon: LoaderCircle, cls: 'bg-signal/30 text-foreground border-transparent', spin: true },
-  passed: { word: 'All gates passed', icon: CircleCheck, cls: 'bg-green-50 text-green-800 border-green-300 dark:bg-green-950 dark:text-green-200', spin: false },
-  failed: { word: 'Stopped at a gate', icon: CircleX, cls: 'bg-red-50 text-red-800 border-red-300 dark:bg-red-950 dark:text-red-200', spin: false },
+  passed: { word: 'All gates passed', icon: CircleCheck, cls: 'text-good border-good/30 bg-good/10', spin: false },
+  failed: { word: 'Stopped at a gate', icon: CircleX, cls: 'text-destructive border-destructive/30 bg-destructive/10', spin: false },
   canceled: { word: 'Stopped', icon: Ban, cls: 'text-muted-foreground', spin: false },
 } as const
 
@@ -44,12 +43,11 @@ export function RunView({ run, error, validation }: { run: Run | null; error: st
   const id = run ? encodeURIComponent(run.id) : ''
 
   return (
-    <Card className="min-w-0 gap-4">
-      <CardContent className="space-y-4">
+    <section className="min-w-0 space-y-4 p-5">
         <div className="flex flex-wrap items-center gap-3">
           {run ? (
             <>
-              <h2 className="text-lg font-semibold">{run.name}</h2>
+              <h2 className="text-[17px] font-semibold tracking-[-0.015em]">{run.name}</h2>
               {pill && (
                 <Badge variant="outline" className={cn('gap-1', pill.cls)}>
                   <pill.icon className={cn('size-3.5', pill.spin && 'animate-spin')} />
@@ -100,7 +98,7 @@ export function RunView({ run, error, validation }: { run: Run | null; error: st
             </>
           ) : (
             <>
-              <h2 className="text-lg font-semibold">{error ? 'Run not found' : 'No run yet'}</h2>
+              <h2 className="text-[17px] font-semibold tracking-[-0.015em]">{error ? 'Run not found' : 'No run yet'}</h2>
               <span className="text-sm text-muted-foreground">{error ?? 'Pick an example or write a spec, then run the line.'}</span>
             </>
           )}
@@ -135,7 +133,6 @@ export function RunView({ run, error, validation }: { run: Run | null; error: st
             <ContractView v={validation} />
           </TabsContent>
         </Tabs>
-      </CardContent>
-    </Card>
+    </section>
   )
 }

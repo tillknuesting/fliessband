@@ -101,7 +101,7 @@ export interface FileEntry { path: string; bytes: number; origin: string }
 export interface PassCount { passed: number; total: number }
 export interface Candidate {
   model: string; status: 'ran' | 'compile' | 'policy' | 'incomplete' | 'no answer'; note?: string
-  own: PassCount; visible: PassCount; foreign: PassCount; cross?: Record<string, PassCount> | null
+  own: PassCount; visible: PassCount; foreign: PassCount; cross?: Record<string, PassCount> | null; failed_tests?: string[] | null
   score: number; tokens_in: number; tokens_out: number; cost_usd?: number; ms: number; chosen: boolean
 }
 export interface Tournament { winner: string; candidates: Candidate[] }

@@ -64,7 +64,7 @@ function Histogram({ title, description, data }: { title: string; description: s
           <CartesianGrid vertical={false} />
           <XAxis dataKey="label" tickLine={false} axisLine={false} tickMargin={6} fontSize={11} />
           <ChartTooltip cursor={{ fill: 'var(--muted)' }} content={<ChartTooltipContent hideIndicator />} />
-          <Bar dataKey="count" fill="var(--color-count)" radius={[4, 4, 0, 0]} maxBarSize={28}>
+          <Bar isAnimationActive={false} dataKey="count" fill="var(--color-count)" radius={[4, 4, 0, 0]} maxBarSize={28}>
             <LabelList dataKey="count" position="top" fontSize={11} className="fill-muted-foreground" />
           </Bar>
         </BarChart>
@@ -647,6 +647,16 @@ function Tournament({ rep }: { rep: Report }) {
                           tests by {author}: {pc(p)}
                         </div>
                       ))}
+                      {c.failed_tests?.length ? (
+                        <div className="mt-1.5 border-t border-background/20 pt-1.5">
+                          Fails:
+                          {c.failed_tests.map((t) => (
+                            <div key={t} className="font-mono">
+                              {t}
+                            </div>
+                          ))}
+                        </div>
+                      ) : null}
                     </TooltipContent>
                   </Tooltip>
                 ) : (

@@ -1,12 +1,12 @@
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { CircleAlert, CircleCheck, CircleX, Play } from 'lucide-react'
 import { Button } from '@/components/ui/button'
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { postJSON } from '@/lib/api'
+import { cn } from '@/lib/utils'
 import type { Example, FactoryStatus, Options, Validation } from '@/lib/types'
 
 const OPTIONS: { key: keyof Omit<Options, 'model' | 'models' | 'reviewer' | 'llm'>; label: string }[] = [
@@ -27,6 +27,7 @@ interface Props {
   status: FactoryStatus | null
   running: boolean
   onStarted: (id: string) => void
+  hidden?: boolean
 }
 
 /** A plain textarea with line numbers; Tab inserts spaces, Cmd/Ctrl+Enter runs. */
@@ -102,7 +103,7 @@ function Check({ v }: { v: Validation | null }) {
 }
 
 export function SpecPanel(props: Props) {
-  const { spec, onSpec, examples, example, onExample, validation, status, running, onStarted } = props
+  const { spec, onSpec, examples, example, onExample, validation, status, running, onStarted, hidden } = props
   const [opts, setOpts] = useState<Options>({ mutation: true, fuzz: true, integration: true, smoke: true, vuln: true, llm: false, model: '', reviewer: '' })
   const [modelText, setModelText] = useState('')
   const [starting, setStarting] = useState(false)
@@ -131,10 +132,22 @@ export function SpecPanel(props: Props) {
     }
   }
 
+  // The sidebar, the command menu and Cmd/Ctrl+Enter anywhere start a run.
+  const startRef = useRef(start)
+  startRef.current = start
+  useEffect(() => {
+    const on = () => void startRef.current()
+    window.addEventListener('fliessband:run', on)
+    return () => window.removeEventListener('fliessband:run', on)
+  }, [])
+
   return (
-    <Card className="h-fit lg:sticky lg:top-4">
-      <CardHeader className="flex-row items-center justify-between gap-2">
-        <CardTitle>Service spec</CardTitle>
+    <section
+      aria-label="Service spec"
+      className={cn('flex-col gap-4 border-b p-4 lg:sticky lg:top-0 lg:max-h-[calc(100vh-4rem)] lg:overflow-y-auto lg:border-r lg:border-b-0', hidden ? 'hidden' : 'flex')}
+    >
+      <div className="flex items-center justify-between gap-2">
+        <h2 className="text-[13.5px] font-medium">Service spec</h2>
         <div className="flex items-center gap-2">
           <Label htmlFor="example" className="text-xs text-muted-foreground">
             Start from
@@ -152,8 +165,8 @@ export function SpecPanel(props: Props) {
             </SelectContent>
           </Select>
         </div>
-      </CardHeader>
-      <CardContent className="space-y-4">
+      </div>
+      <div className="space-y-4">
         <Editor value={spec} onChange={onSpec} onRun={start} />
         <Check v={validation} />
         <fieldset className="space-y-2.5">
@@ -203,11 +216,11 @@ export function SpecPanel(props: Props) {
           </p>
         </fieldset>
         {error && <p className="text-[13px] text-destructive">{error}</p>}
-        <Button size="lg" className="w-full bg-signal font-semibold text-foreground hover:bg-signal/85" disabled={!canRun} onClick={start}>
+        <Button className="w-full bg-signal font-medium text-zinc-900 hover:bg-signal/85" disabled={!canRun} onClick={start}>
           <Play className="size-4" />
           {running ? 'The line is running…' : 'Run the line'}
         </Button>
-      </CardContent>
-    </Card>
+      </div>
+    </section>
   )
 }

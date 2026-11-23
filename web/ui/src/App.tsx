@@ -1,62 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
+import { TooltipProvider } from '@/components/ui/tooltip'
+import { CommandMenu, Kbd, MOD, Sidebar, StatusIcon, useTheme } from '@/components/Shell'
+import { PanelLeft, Search } from 'lucide-react'
 import { History } from '@/components/History'
 import { RunView } from '@/components/RunView'
 import { SignIn } from '@/components/SignIn'
 import { SpecPanel } from '@/components/SpecPanel'
 import { api, getJSON, onUnauthorized } from '@/lib/api'
 import { useHashRoute, useRun } from '@/lib/useRun'
-import { cn } from '@/lib/utils'
 import type { Example, FactoryStatus, Summary, Validation } from '@/lib/types'
-
-function Logo() {
-  return (
-    <svg viewBox="0 0 28 28" aria-hidden className="size-6">
-      <rect x="2.75" y="16.75" width="22.5" height="7.5" rx="3.75" fill="none" stroke="currentColor" strokeWidth="1.5" />
-      <circle cx="6.5" cy="20.5" r="1.75" fill="currentColor" />
-      <circle cx="14" cy="20.5" r="1.75" fill="currentColor" />
-      <circle cx="21.5" cy="20.5" r="1.75" fill="currentColor" />
-      <rect x="5" y="9" width="7" height="6.5" rx="1" fill="currentColor" />
-      <rect x="15" y="6" width="8" height="9.5" rx="1" fill="var(--signal)" />
-    </svg>
-  )
-}
-
-function Env({ status }: { status: FactoryStatus | null }) {
-  if (!status) return <span className="text-sm text-zinc-400">Factory API unreachable</span>
-  const found = status.tools.filter((t) => t.found).length
-  const dot = (ok: boolean) => <span className={cn('size-2 rounded-full', ok ? 'bg-emerald-400' : 'bg-amber-400')} />
-  return (
-    <div className="flex items-center gap-4 text-sm text-zinc-300">
-      <Tooltip>
-        <TooltipTrigger className="flex items-center gap-1.5">
-          {dot(found === status.tools.length)}
-          Toolchain <b className="text-white">{found} of {status.tools.length}</b>
-        </TooltipTrigger>
-        <TooltipContent>
-          {status.tools.map((t) => (
-            <div key={t.name}>
-              {t.found ? '✓' : '✕'} {t.name}: {t.found ? t.version : 'not found'}
-            </div>
-          ))}
-        </TooltipContent>
-      </Tooltip>
-      <Tooltip>
-        <TooltipTrigger className="flex items-center gap-1.5">
-          {status.llm ? dot(true) : <span className="size-2 rounded-full bg-zinc-500" />}
-          {status.llm ? (
-            <>
-              LLM <b className="text-white">{status.llm.model}</b>
-            </>
-          ) : (
-            'LLM off'
-          )}
-        </TooltipTrigger>
-        <TooltipContent>{status.llm ? status.llm.base_url : 'Start fliessband with FLIESSBAND_LLM_API_KEY (or OPENAI_API_KEY) to let the LLM implement custom RPCs.'}</TooltipContent>
-      </Tooltip>
-    </div>
-  )
-}
 
 export default function App() {
   const route = useHashRoute()
@@ -68,6 +20,33 @@ export default function App() {
   const [example, setExample] = useState('')
   const [validation, setValidation] = useState<Validation | null>(null)
   const loadedSpecFor = useRef<string | null>(null)
+  const [dark, toggleTheme] = useTheme()
+  const [palette, setPalette] = useState(false)
+  const [specOpen, setSpecOpen] = useState(() => localStorage.getItem('specPane') !== 'closed')
+  const toggleSpec = useCallback(() => setSpecOpen(!specOpen), [specOpen])
+  useEffect(() => localStorage.setItem('specPane', specOpen ? 'open' : 'closed'), [specOpen])
+
+  // Keyboard: Cmd/Ctrl+K opens the command menu, [ toggles the spec, G then L/H switches views.
+  useEffect(() => {
+    let g = 0
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault()
+        setPalette((o) => !o)
+        return
+      }
+      const t = e.target as HTMLElement
+      if (e.metaKey || e.ctrlKey || e.altKey || t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName)) return
+      if (e.key === '[') toggleSpec()
+      else if (e.key === 'g') g = Date.now()
+      else if (Date.now() - g < 800 && (e.key === 'h' || e.key === 'l')) {
+        location.hash = e.key === 'h' ? '#/history' : '#/'
+        g = 0
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [toggleSpec])
 
   const refreshHistory = useCallback(() => getJSON<Summary[]>('/api/runs').then(setHistory, () => {}), [])
   const { run, error } = useRun(route.runId, refreshHistory)
@@ -125,61 +104,85 @@ export default function App() {
     if (route.view === 'history') refreshHistory()
   }, [route.view, refreshHistory])
 
+  const pickExample = (name: string) => {
+    setExample(name)
+    const ex = examples.find((e) => e.name === name)
+    if (ex) setSpec(ex.source)
+    setSpecOpen(true)
+    location.hash = '#/'
+  }
+
   return (
     <TooltipProvider delayDuration={150}>
-      <div className="min-h-screen bg-muted/50">
-        <header className="flex h-13 items-center gap-6 bg-zinc-900 px-5 text-zinc-100">
-          <a href="#/" className="flex items-center gap-2 text-lg font-bold tracking-tight">
-            <Logo /> Fliessband
-          </a>
-          <nav aria-label="Views" className="flex gap-1">
-            {(
-              [
-                ['line', 'Line', run ? `#/run/${run.id}` : '#/'],
-                ['history', 'History', '#/history'],
-              ] as const
-            ).map(([v, label, href]) => (
-              <a
-                key={v}
-                href={href}
-                aria-current={route.view === v ? 'page' : undefined}
-                className="rounded-md px-3 py-1.5 text-sm font-medium text-zinc-400 hover:text-white aria-[current=page]:bg-white/10 aria-[current=page]:text-white aria-[current=page]:shadow-[inset_0_-2px_0_var(--signal)]"
+      <div className="flex h-screen overflow-hidden bg-sidebar">
+        <Sidebar view={route.view} runId={run?.id ?? route.runId} runs={history} status={status} dark={dark} onTheme={toggleTheme} onSearch={() => setPalette(true)} />
+        <div className="flex min-w-0 flex-1 flex-col bg-background md:my-2 md:mr-2 md:rounded-lg md:border">
+          <header className="flex h-11 shrink-0 items-center gap-2 border-b px-4 text-[13px]">
+            {route.view === 'line' && (
+              <button
+                onClick={toggleSpec}
+                aria-pressed={specOpen}
+                title="Show or hide the spec ( [ )"
+                className="-ml-1.5 grid size-7 place-items-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground aria-pressed:text-foreground"
               >
-                {label}
+                <PanelLeft className="size-4" />
+              </button>
+            )}
+            <nav aria-label="Breadcrumb" className="flex min-w-0 items-center gap-1.5 text-muted-foreground">
+              <a href={route.view === 'history' ? '#/history' : '#/'} className="hover:text-foreground">
+                {route.view === 'history' ? 'History' : 'Line'}
               </a>
-            ))}
-          </nav>
-          <div className="ml-auto">
-            <Env status={status} />
-          </div>
-        </header>
-        <main className="p-4">
-          {route.view === 'history' ? (
-            <History runs={history} />
-          ) : (
-            <div className="grid items-start gap-4 lg:grid-cols-[minmax(340px,400px)_minmax(0,1fr)]">
-              <SpecPanel
-                spec={spec}
-                onSpec={setSpec}
-                examples={examples}
-                example={example}
-                onExample={(name) => {
-                  setExample(name)
-                  const ex = examples.find((e) => e.name === name)
-                  if (ex) setSpec(ex.source)
-                }}
-                validation={validation}
-                status={status}
-                running={run?.status === 'running'}
-                onStarted={(id) => {
-                  loadedSpecFor.current = id
-                  location.hash = `#/run/${id}`
-                }}
-              />
-              <RunView key={run?.id ?? 'none'} run={run} error={error} validation={validation} />
-            </div>
-          )}
-        </main>
+              {route.view === 'line' && run && (
+                <>
+                  <span aria-hidden>/</span>
+                  <span className="flex min-w-0 items-center gap-1.5 text-foreground">
+                    <StatusIcon status={run.status} />
+                    <span className="truncate font-medium">{run.name}</span>
+                    <span className="font-mono text-[11.5px] text-muted-foreground">{run.id}</span>
+                  </span>
+                </>
+              )}
+            </nav>
+            <button
+              onClick={() => setPalette(true)}
+              className="ml-auto flex h-7 items-center gap-2 rounded-md px-2 text-muted-foreground hover:bg-accent hover:text-foreground"
+            >
+              <Search className="size-3.5" />
+              <span className="hidden sm:inline">Search</span>
+              <Kbd>{MOD}</Kbd>
+              <Kbd>K</Kbd>
+            </button>
+          </header>
+          <main className="min-h-0 flex-1 overflow-y-auto">
+            {route.view === 'history' ? (
+              <div className="p-5">
+                <History runs={history} />
+              </div>
+            ) : (
+              <div className={specOpen ? 'grid min-h-full items-start lg:grid-cols-[minmax(300px,330px)_minmax(0,1fr)]' : 'min-h-full'}>
+                {(
+                  <SpecPanel
+                    hidden={!specOpen}
+                    spec={spec}
+                    onSpec={setSpec}
+                    examples={examples}
+                    example={example}
+                    onExample={pickExample}
+                    validation={validation}
+                    status={status}
+                    running={run?.status === 'running'}
+                    onStarted={(id) => {
+                      loadedSpecFor.current = id
+                      location.hash = `#/run/${id}`
+                    }}
+                  />
+                )}
+                <RunView key={run?.id ?? 'none'} run={run} error={error} validation={validation} />
+              </div>
+            )}
+          </main>
+        </div>
+        <CommandMenu open={palette} onOpenChange={setPalette} runs={history} examples={examples} onExample={pickExample} onTheme={toggleTheme} onToggleSpec={toggleSpec} />
         <SignIn open={signIn} />
       </div>
     </TooltipProvider>

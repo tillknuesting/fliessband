@@ -49,10 +49,10 @@ export function Conveyor({ stages, running, selected, onSelect }: { stages: Stag
     if (phases.length && phases[phases.length - 1].name === p) phases[phases.length - 1].n++
     else phases.push({ name: p, n: 1 })
   }
-  const cols = { gridTemplateColumns: `repeat(${stages.length}, minmax(52px, 1fr))` }
+  const cols = { gridTemplateColumns: `repeat(${stages.length}, minmax(36px, 1fr))` }
   return (
     <div className="overflow-x-auto pb-1">
-      <div className="relative min-w-[1100px]">
+      <div className="relative min-w-[760px]">
         <div className="mb-2 grid" style={cols} aria-hidden>
           {phases.map((p, i) => (
             <span key={i} className="mx-1 border-b pb-1 text-center text-xs font-medium text-muted-foreground" style={{ gridColumn: `span ${p.n}` }}>
@@ -60,8 +60,8 @@ export function Conveyor({ stages, running, selected, onSelect }: { stages: Stag
             </span>
           ))}
         </div>
-        <div className="absolute inset-x-0 top-[37px] h-1.5 rounded-full bg-muted ring-1 ring-border ring-inset" />
-        <div className={cn('absolute left-0 top-[37px] h-1.5 rounded-full bg-signal transition-[width] duration-500', running && 'belt-moving')} style={{ width: `${width}%` }} />
+        <div className="absolute inset-x-0 top-[35px] h-1.5 rounded-full bg-muted ring-1 ring-border ring-inset" />
+        <div className={cn('absolute left-0 top-[35px] h-1.5 rounded-full bg-signal transition-[width] duration-500', running && 'belt-moving')} style={{ width: `${width}%` }} />
         <ol className="relative grid" style={cols}>
           {stages.map((s) => {
             const time = s.status === 'running' ? 'running' : s.status === 'skipped' ? 'skipped' : s.duration_ms ? ms(s.duration_ms) : ''
@@ -75,13 +75,13 @@ export function Conveyor({ stages, running, selected, onSelect }: { stages: Stag
                       aria-label={`${s.name}, ${s.gate ? 'gate' : 'check'}, ${STATUS_WORD[s.status]}`}
                       className={cn('group flex w-full flex-col items-center gap-1 rounded-md px-0.5 pb-2 outline-none focus-visible:ring-2 focus-visible:ring-ring', selected === s.id && 'bg-muted')}
                     >
-                      <span className={cn('z-10 grid size-8 place-items-center border-2', s.gate ? 'rounded-md' : 'rounded-full', LAMP[s.status])}>
+                      <span className={cn('z-10 grid size-7 place-items-center border-2', s.gate ? 'rounded-md' : 'rounded-full', LAMP[s.status])}>
                         <Icon status={s.status} />
                       </span>
-                      <span className={cn('text-center text-[12.5px] font-medium leading-tight text-foreground/75 group-hover:text-foreground', s.status === 'failed' && 'text-destructive')}>
+                      <span className={cn('w-full truncate text-center text-[10.5px] font-medium leading-tight tracking-[-0.02em] text-foreground/75 group-hover:text-foreground', s.status === 'failed' && 'text-destructive')}>
                         {SHORT[s.id] ?? s.name}
                       </span>
-                      <span className="min-h-3 text-[11px] leading-none text-muted-foreground tabular-nums">{time}</span>
+                      <span className="min-h-3 whitespace-nowrap text-[10px] leading-none text-muted-foreground tabular-nums">{time}</span>
                     </button>
                   </TooltipTrigger>
                   <TooltipContent className="max-w-80">
