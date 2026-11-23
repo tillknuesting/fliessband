@@ -15,6 +15,12 @@ type ColumnModel struct {
 	ScanVar string // Go type of the scan target
 	Arg     string // Go expression for the query argument (the record is x)
 	Assign  string // Go statement copying the scan target cGoName into x
+
+	// The parts of DDL, compared by the migration planner.
+	Type    string   // SQL type, e.g. "text" or "bigint[]"
+	NotNull bool     // the column is NOT NULL
+	Default string   // DEFAULT expression, "" for none
+	Checks  []string // CHECK expressions, in DDL order
 }
 
 // UniqueIndex is a partial unique index for a unique field.
@@ -63,7 +69,7 @@ func newColumn(f *FieldModel, helpers map[string]bool) *ColumnModel {
 	var checks []string
 	switch {
 	case f.Repeated:
-		c.DDL = fmt.Sprintf("%s %s[] NOT NULL DEFAULT '{}'", c.Ident, sqlType)
+		c.Type, c.NotNull, c.Default = sqlType+"[]", true, "'{}'"
 		c.ScanVar = "[]" + goType
 		c.Arg = "orEmpty(" + get + ")"
 		c.Assign = dst + " = " + src
@@ -80,7 +86,7 @@ func newColumn(f *FieldModel, helpers map[string]bool) *ColumnModel {
 			checks = append(checks, fmt.Sprintf("cardinality(%s) > 0", c.Ident))
 		}
 	case f.Type == "timestamp":
-		c.DDL = c.Ident + " timestamptz"
+		c.Type = "timestamptz"
 		c.ScanVar = "*time.Time"
 		c.Arg, c.Assign = "timeOrNil("+get+")", dst+" = timeToProto("+src+")"
 		helpers["time"] = true
@@ -97,7 +103,7 @@ func newColumn(f *FieldModel, helpers map[string]bool) *ColumnModel {
 		case "bytes":
 			def = "''::bytea"
 		}
-		c.DDL = fmt.Sprintf("%s %s NOT NULL DEFAULT %s", c.Ident, sqlType, def)
+		c.Type, c.NotNull, c.Default = sqlType, true, def
 		c.ScanVar = goType
 		c.Arg, c.Assign = get, dst+" = "+src
 		switch f.Type {
@@ -111,6 +117,14 @@ func newColumn(f *FieldModel, helpers map[string]bool) *ColumnModel {
 			checks = append(checks, c.Ident+" >= 0")
 		}
 		checks = append(checks, valueChecks(f, c.Ident)...)
+	}
+	c.Checks = checks
+	c.DDL = c.Ident + " " + c.Type
+	if c.NotNull {
+		c.DDL += " NOT NULL"
+	}
+	if c.Default != "" {
+		c.DDL += " DEFAULT " + c.Default
 	}
 	for _, ch := range checks {
 		c.DDL += " CHECK (" + ch + ")"

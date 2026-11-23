@@ -135,6 +135,7 @@ func (x *executor) run(ctx context.Context) {
 		x.do(ctx, "scaffold", x.stageScaffold) &&
 		x.do(ctx, "protolint", x.stageProtoLint) &&
 		x.do(ctx, "breaking", x.stageBreaking) &&
+		x.do(ctx, "migrations", x.stageMigrations) &&
 		x.do(ctx, "codegen", x.stageCodegen)
 	if ok {
 		x.do(ctx, "implement", x.stageImplement)

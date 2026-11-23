@@ -1,7 +1,7 @@
 # Fliessband: a software factory for Go gRPC microservices
 
 Fliessband turns a short service spec (YAML) into a runnable, tested, deployable Go
-gRPC microservice, sends it through a line of 21 stations, and measures what it
+gRPC microservice, sends it through a line of 22 stations, and measures what it
 produced. A web UI shows the line running, the generated code with the origin of
 every file, the measurements, and a history of runs to compare.
 
@@ -76,7 +76,7 @@ at a limit; the generated tests now include boundary cases.
    │  fliessband (one Go binary)    │◄───────────────────►│  Web UI      │
    │  spec     validate        │  CSRF, host check,  │  spec editor │
    │  gen      templates       │  token auth, CSP    │  live line   │
-   │  pipeline 21 stations     │                     │  measures    │
+   │  pipeline 22 stations     │                     │  measures    │
    │  policy   LLM file rules  │                     │  code, logs  │
    │  mutate   mutation tests  │                     │  history     │
    │  supply   SBOM, SLSA      │                     └──────────────┘
@@ -96,6 +96,7 @@ at a limit; the generated tests now include boundary cases.
 | | Scaffold | templates, `go/format` | yes | Source tree and manifest |
 | | Proto lint | `buf lint` STANDARD | yes | API style findings |
 | | Compatibility | `buf breaking` against the last passing run of the service | yes | Breaking changes; a new major version (v2) skips the check |
+| | Migrations | `internal/gen` schema diff | yes | The previous version's migrations carried forward, the next one generated; destructive changes listed |
 | | Codegen | `buf generate` | yes | `*.pb.go` |
 | Build | Implement | LLM (optional) | no | Custom RPCs and tests |
 | | Policy | `internal/policy` | yes, repairable | Rule violations in LLM files |
@@ -142,6 +143,8 @@ Choices:
 - **PostgreSQL done properly.** pgx pool, embedded migrations under an advisory
   lock, `SELECT … FOR UPDATE` for read-modify-write, partial unique indexes,
   and CHECK constraints that mirror the spec's validation rules.
+- **Forward-only schema migrations.** A schema that changes between
+  versions is migrated, never recreated (section 5.1).
 - **UUIDv7 ids and keyset paging.** Ids are time-ordered (RFC 9562), so id
   order is creation order, index locality is good, and page tokens (opaque,
   AIP-158) stay stable while records are added or removed.
@@ -153,6 +156,53 @@ Choices:
 - **Kubernetes-ready.** gRPC probes, non-root, read-only root file system, all
   capabilities dropped, seccomp, topology spread, PDB, and a CPU limit that Go
   1.25+ turns into `GOMAXPROCS`.
+
+### 5.1 Schema migrations between versions
+
+The API has a compatibility gate in `buf breaking`; the Migrations station
+is its counterpart for the database. It runs after Compatibility and before
+Codegen, because the migrations are embedded in the binary.
+
+- **The previous version** is the run the Compatibility station compares
+  with (the last passing run of the service), or the run named by
+  `Options.Base` when the run improves on a version that passed. A failed
+  base never shipped, so it is not used. Each run keeps its spec in
+  `run.json` and its migrations in the service tree, which is all the next
+  run needs; retention always keeps the newest passing run of a service.
+- **History is never rewritten.** The scaffold renders `0001_init.sql` from
+  the current spec. When a previous version exists, its migration files
+  replace that file byte for byte, and the manifest records them as carried
+  from that run.
+- **The diff** compares the PostgreSQL model the generator derives from the
+  previous spec with the one for this spec (`gen.PlanMigration`): tables,
+  columns, types, NOT NULL and defaults, the CHECK constraints that mirror
+  validation rules, and the partial unique indexes. Entities and fields
+  match by name or `renamed_from`; a changed plural renames the table, and
+  unique indexes follow renames because the store reports conflicts by
+  index name. The result is the next numbered file, named after its first
+  changes, applied by the same advisory-locked migrator after the earlier
+  files.
+- **Rules.** Columns are always added with the generator's default (the
+  proto3 zero value, or NULL for timestamps), so existing rows read the way
+  an older client sees an unset field. Safe: new tables and columns whose
+  zero value passes their constraints, declared renames, dropping a unique
+  index, looser constraints (compared on the spec's bounds), widening
+  (`integer` to `bigint`, `numeric` or `double precision`; `bigint` to
+  `numeric`; `real` to `double precision`). Destructive: dropping a table or
+  column, any other type change (a `USING` cast is generated and may fail),
+  tighter constraints, a new column whose zero value its constraints reject
+  (a required field: in effect NOT NULL without a default), and a new unique
+  index, which existing duplicates make fail. A drop next to an added field
+  of the same type suggests `renamed_from`.
+- **The gate.** Destructive changes fail the station with the list, unless
+  the spec sets `migrations: {allow_destructive: true}`; then the station
+  warns and tighter constraints are added `NOT VALID`. The first migration
+  declares CHECKs inline, so their names are PostgreSQL's choice; changed
+  constraints are dropped by looking them up in `pg_constraint` by column.
+- **Report.** `report.migrations` lists the chain, the generated file, every
+  change with its risk, and whether the gate blocked or allowed them. The
+  integration station applies the whole chain to an empty PostgreSQL, and a
+  generated test checks that every embedded file was recorded.
 
 ## 6. Factory security and operations
 
@@ -191,6 +241,7 @@ unsigned; sign it in a release pipeline (Sigstore cosign, for example).
 | Tests | Counts, statement coverage (unit and integration merged), goroutine leaks |
 | Findings | Policy, buf lint, vet, golangci-lint, fuzz failures, modernizations, vulnerabilities |
 | Contract | Breaking changes against the baseline run |
+| Migrations | Migration chain, the generated file, schema changes and which were destructive |
 | Runtime | Startup, p50/p90/p99, throughput, RSS, shutdown; against PostgreSQL when available |
 | Supply chain | Components, toolchain, binary digest |
 | Factory | Stage times, LLM calls, tokens (and cached tokens), repairs, rejected writes |
@@ -220,3 +271,8 @@ here, because they are the one signal a prompt change cannot tune towards.
   idempotent creates.
 - Container sandboxing for test runs (gVisor or similar) on shared factories.
 - Signed provenance and SBOMs; image builds in the line.
+- Upgrade tests with data: the integration station applies the migration
+  chain to an empty database, not to one filled by the previous version,
+  so a destructive `USING` cast that fails on real rows is not caught there.
+- Migrations follow spec changes only. A template change that alters the
+  DDL for the same spec (a new CHECK rule, say) is not migrated.

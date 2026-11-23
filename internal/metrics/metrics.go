@@ -40,6 +40,7 @@ type Report struct {
 	Mutation     *Mutation    `json:"mutation,omitempty"`
 	Fuzz         *Fuzz        `json:"fuzz,omitempty"`
 	Contract     *Contract    `json:"contract,omitempty"`
+	Migrations   *Migrations  `json:"migrations,omitempty"`
 	Integration  *Integration `json:"integration,omitempty"`
 	Supply       *Supply      `json:"supply,omitempty"`
 	Security     *Security    `json:"security,omitempty"`
