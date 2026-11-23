@@ -205,7 +205,7 @@ func (c Config) RunArgs(j Job) []string {
 		"--pids-limit", strconv.Itoa(c.PIDs),
 		"--tmpfs", "/tmp:rw,exec,nosuid,nodev,size=" + c.TmpSize,
 		"--init",
-		"--pull", "missing",
+		"--pull", "missing", "--quiet",
 	}
 	if c.Podman() && os.Getuid() != 0 {
 		args = append(args, "--userns", "keep-id") // rootless: map the host user, so mounted files keep their owner

@@ -46,7 +46,7 @@ func TestRunArgs(t *testing.T) {
 		"--pids-limit", "512",
 		"--tmpfs", "/tmp:rw,exec,nosuid,nodev,size=1g",
 		"--init",
-		"--pull", "missing",
+		"--pull", "missing", "--quiet",
 		"--runtime", "runsc",
 		"--label", "fliessband.run=abc", "--label", "fliessband.sandbox=1",
 		"--workdir", "/data/runs/abc/service",
