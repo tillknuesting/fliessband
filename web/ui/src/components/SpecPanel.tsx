@@ -216,7 +216,7 @@ export function SpecPanel(props: Props) {
           </p>
         </fieldset>
         {error && <p className="text-[13px] text-destructive">{error}</p>}
-        <Button className="w-full bg-signal font-medium text-zinc-900 hover:bg-signal/85" disabled={!canRun} onClick={start}>
+        <Button className="w-full bg-signal font-medium text-signal-foreground hover:bg-signal/85" disabled={!canRun} onClick={start}>
           <Play className="size-4" />
           {running ? 'The line is running…' : 'Run the line'}
         </Button>

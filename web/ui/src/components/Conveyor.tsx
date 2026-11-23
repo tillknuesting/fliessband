@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Check, Minus, Ban, X } from 'lucide-react'
+import { Check, Minus, Ban, LoaderCircle, X } from 'lucide-react'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { cn } from '@/lib/utils'
 import { ms } from '@/lib/format'
@@ -12,7 +12,7 @@ const LAMP: Record<Stage['status'], string> = {
   warning: 'bg-warn border-warn text-foreground',
   skipped: 'bg-card border-dashed border-muted-foreground/50 text-muted-foreground',
   pending: 'bg-card border-border text-muted-foreground',
-  running: 'lamp-running border-foreground',
+  running: 'lamp-running border-signal',
   canceled: 'bg-card border-foreground/60 text-foreground/70',
 }
 
@@ -29,6 +29,8 @@ function Icon({ status }: { status: Stage['status'] }) {
       return <Minus className={c} />
     case 'canceled':
       return <Ban className={c} />
+    case 'running':
+      return <LoaderCircle className="size-4 animate-spin stroke-[2.5]" />
     default:
       return null
   }
@@ -220,7 +222,7 @@ export function Conveyor({
                   piece.state === 'moving' && running && 'work-piece-moving',
                   piece.state === 'stopped' && 'border-destructive bg-destructive/90 text-white',
                   piece.state === 'shipped' && 'border-foreground/20 bg-card',
-                  piece.state === 'moving' && 'border-black/30 bg-signal text-black',
+                  piece.state === 'moving' && 'border-transparent bg-signal text-signal-foreground',
                 )}
               >
                 {piece.state === 'shipped' && grade ? <span className={GRADE_TONE[grade]}>{grade}</span> : piece.state === 'stopped' ? <X className="size-3 stroke-[3]" /> : null}

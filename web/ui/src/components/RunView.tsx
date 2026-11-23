@@ -15,7 +15,7 @@ import { CodeView, ContractView, LogView } from './Views'
 import { ErrorBoundary } from './ErrorBoundary'
 
 const PILL = {
-  running: { word: 'Running', icon: LoaderCircle, cls: 'bg-signal/30 text-foreground border-transparent', spin: true },
+  running: { word: 'Running', icon: LoaderCircle, cls: 'bg-signal/15 text-signal border-signal/30', spin: true },
   passed: { word: 'All gates passed', icon: CircleCheck, cls: 'text-good border-good/30 bg-good/10', spin: false },
   failed: { word: 'Stopped at a gate', icon: CircleX, cls: 'text-destructive border-destructive/30 bg-destructive/10', spin: false },
   canceled: { word: 'Stopped', icon: Ban, cls: 'text-muted-foreground', spin: false },
