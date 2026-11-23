@@ -42,6 +42,7 @@ var Stages = []StageDef{
 	{"scaffold", "Scaffold", "templates", true, "Contract"},
 	{"protolint", "Proto lint", "buf lint", true, "Contract"},
 	{"breaking", "Compatibility", "buf breaking", true, "Contract"},
+	{"migrations", "Migrations", "schema diff", true, "Contract"},
 	{"codegen", "Codegen", "buf generate", true, "Contract"},
 	{"implement", "Implement", "LLM", false, "Build"},
 	{"policy", "Policy", "fliessband/policy", true, "Build"},

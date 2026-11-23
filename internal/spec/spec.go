@@ -23,6 +23,9 @@ type Spec struct {
 	Entities    []Entity `yaml:"entities" json:"entities"`
 	Methods     []Method `yaml:"methods" json:"methods"`
 	Features    Features `yaml:"features" json:"features"`
+	// Migrations controls how schema changes against the previous version
+	// are migrated; see migrations.go.
+	Migrations Migrations `yaml:"migrations" json:"migrations"`
 }
 
 // Entity is a resource with generated CRUD RPCs.
@@ -32,6 +35,9 @@ type Entity struct {
 	Doc    string   `yaml:"doc" json:"doc"`
 	Fields []Field  `yaml:"fields" json:"fields"`
 	Ops    []string `yaml:"ops" json:"ops"`
+	// RenamedFrom is the entity's name in the previous version, so the
+	// migration renames its table instead of dropping it.
+	RenamedFrom string `yaml:"renamed_from" json:"renamed_from,omitempty"`
 }
 
 // Field is a message field. Type is a proto scalar, "timestamp", or (in
@@ -49,6 +55,9 @@ type Field struct {
 	MaxLen   *int     `yaml:"max_len" json:"max_len,omitempty"`
 	Pattern  string   `yaml:"pattern" json:"pattern,omitempty"`
 	Example  string   `yaml:"example" json:"example,omitempty"`
+	// RenamedFrom is the field's name in the previous version (entity
+	// fields only), so the migration renames its column.
+	RenamedFrom string `yaml:"renamed_from" json:"renamed_from,omitempty"`
 }
 
 // Method is a custom (non-CRUD) RPC whose behaviour is described in prose
@@ -303,6 +312,7 @@ func (s *Spec) Validate() []Problem {
 			ps = append(ps, s.validateExample(ep, m, ex)...)
 		}
 	}
+	ps = append(ps, s.validateRenames()...)
 	return ps
 }
 

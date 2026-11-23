@@ -3,6 +3,7 @@ import type { Stage, Status } from './types'
 const def: [string, string, string, boolean, string][] = [
   ['spec', 'Spec', 'fliessband/spec', true, 'Contract'], ['scaffold', 'Scaffold', 'templates', true, 'Contract'],
   ['protolint', 'Proto lint', 'buf lint', true, 'Contract'], ['breaking', 'Compatibility', 'buf breaking', true, 'Contract'],
+  ['migrations', 'Migrations', 'schema diff', true, 'Contract'],
   ['codegen', 'Codegen', 'buf generate', true, 'Contract'], ['implement', 'Implement', 'LLM', false, 'Build'],
   ['policy', 'Policy', 'fliessband/policy', true, 'Build'], ['deps', 'Dependencies', 'go mod tidy', true, 'Build'],
   ['build', 'Build', 'go build', true, 'Build'], ['vet', 'Vet', 'go vet', true, 'Build'],
@@ -20,7 +21,7 @@ export const LINE: Stage[] = def.map(([id, name, tool, gate, phase]) => ({
 }))
 
 export const SHORT: Record<string, string> = {
-  spec: 'Spec', scaffold: 'Tmpl', protolint: 'Proto', breaking: 'Break', codegen: 'Gen', implement: 'Impl',
+  spec: 'Spec', scaffold: 'Tmpl', protolint: 'Proto', breaking: 'Break', migrations: 'Migr', codegen: 'Gen', implement: 'Impl',
   policy: 'Policy', deps: 'Deps', build: 'Build', vet: 'Vet', lint: 'Lint', staticcheck: 'Static', test: 'Test',
   acceptance: 'Accept', review: 'Review', mutation: 'Mutate', fuzz: 'Fuzz', vulncheck: 'Vulns', integration: 'DB', smoke: 'Smoke',
   sbom: 'SBOM', measure: 'Score',

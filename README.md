@@ -108,9 +108,42 @@ free. Custom methods like `AdjustStock` are what the LLM implements.
 
 The UI shows the generated proto contract live as you type.
 
+### Versions and schema migrations
+
+A deployed database outlives the version that created it, so each run
+migrates from the previous version of the service: the last passing run, or
+the run it improves on when that one passed. Its migration files are copied
+forward unchanged and the difference between its spec and yours becomes the
+next file, such as `0002_add_reviews.sql`. A first version gets
+`0001_init.sql`.
+
+- Safe changes go through: new entities and fields, dropped unique indexes,
+  looser constraints, widened types (`int32` to `int64`, `float` to
+  `double`), and renames. New columns get the zero value as their default,
+  which is what older clients see for an unset field.
+- Destructive changes stop the line at the Migrations station with a list:
+  dropped entities or fields, other type changes, tighter constraints, a new
+  required field or a new unique field on an existing entity.
+- A renamed entity or field would look like a drop plus an add. Say what it
+  was called and it is renamed instead:
+
+```yaml
+entities:
+  - name: Item
+    renamed_from: Product        # ALTER TABLE products RENAME TO items
+    fields:
+      - {name: code, type: string, renamed_from: sku}
+migrations:
+  allow_destructive: true        # this version only: let the listed changes through
+```
+
+With `allow_destructive`, tighter constraints are added `NOT VALID`, so
+PostgreSQL enforces them for new writes without checking existing rows.
+Remove the flag once that version is out.
+
 ## The line
 
-Twenty-one stations in five phases. Gates stop the line when they fail; checks
+Twenty-two stations in five phases. Gates stop the line when they fail; checks
 report and let it continue. Some gates send failures back to the LLM, up to
 three times.
 
@@ -119,6 +152,7 @@ three times.
 | Contract | Spec, Scaffold | validation, templates | yes |
 | | Proto lint | `buf lint` STANDARD | yes |
 | | Compatibility | `buf breaking` against the last passing run of the service | yes |
+| | Migrations | carries the previous version's SQL migrations forward, adds one for the schema changes, stops destructive ones | yes |
 | | Codegen | `buf generate` | yes |
 | Build | Implement | one LLM, or a tournament of several, writes the custom RPCs (optional) | no |
 | | Policy | allowed imports; no `init`, `panic` or directives; tests must assert | yes, repairable |
@@ -136,7 +170,9 @@ three times.
 | Ship | Supply chain | CycloneDX 1.6 SBOM, SLSA v1 provenance | no |
 | | Measure | metrics and score | always |
 
-Without Docker the integration station is skipped and says so.
+The integration station applies the whole migration chain to an empty
+database before running the store suite. Without Docker it is skipped and
+says so.
 
 ## The score
 
@@ -236,7 +272,8 @@ that changed between two versions.
 
 - A PostgreSQL store (pgx, embedded migrations under an advisory lock, CHECK
   constraints) next to an in-memory one, both checked by one shared contract
-  suite.
+  suite. Later versions add forward-only migrations instead of rewriting the
+  schema.
 - UUIDv7 ids and keyset paging with validated, canonical page tokens.
 - TLS 1.3 with certificate reload and optional mTLS.
 - Liveness and readiness health, drain on shutdown, connection max age, load
@@ -288,7 +325,7 @@ source.
 |---|---|
 | `cmd/fliessband` | CLI: `serve`, `run`, `gen`, `version` |
 | `internal/spec` | spec types, examples, defaults, validation |
-| `internal/gen` | templates, renderer, PostgreSQL mapping, manifest |
+| `internal/gen` | templates, renderer, PostgreSQL mapping, schema migrations between versions, manifest |
 | `internal/pipeline` | stations, gates, repair and hardening loops, sandboxing, Docker, smoke test |
 | `internal/policy` | rules for LLM-written files |
 | `internal/mutate` | mutation testing with `go test -overlay` |
