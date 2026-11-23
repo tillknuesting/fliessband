@@ -23,6 +23,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"slices"
 	"sort"
@@ -323,7 +324,7 @@ func (a *api) status(w http.ResponseWriter, _ *http.Request) {
 	a.toolsOnce.Do(a.loadTools)
 	resp := map[string]any{"tools": a.tools, "llm": nil, "version": pipeline.Version, "auth": a.cfg.Token != ""}
 	if c := a.m.LLM(); c != nil {
-		resp["llm"] = map[string]string{"model": c.Model, "base_url": c.BaseURL}
+		resp["llm"] = map[string]any{"model": c.Model, "base_url": c.BaseURL, "models": c.Candidates(), "reviewer": c.Reviewer}
 	}
 	writeJSON(w, http.StatusOK, resp)
 }
@@ -427,6 +428,10 @@ func (a *api) startRun(w http.ResponseWriter, r *http.Request) {
 	}
 	req.Options.MaxRepairs = min(max(req.Options.MaxRepairs, 0), 5)
 	req.Options.MaxMutants = min(max(req.Options.MaxMutants, 0), 500)
+	if err := checkModels(req.Options); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	run, err := a.m.Start([]byte(req.Spec), req.Options)
 	switch {
 	case errors.Is(err, pipeline.ErrQueueFull):
@@ -650,4 +655,19 @@ func (a *api) zip(w http.ResponseWriter, r *http.Request) {
 		_, err = io.Copy(f, src)
 		return err
 	})
+}
+
+var reModel = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:/@-]{0,99}$`)
+
+// checkModels bounds the models a run may ask for.
+func checkModels(o pipeline.Options) error {
+	if len(o.Models) > 5 {
+		return errors.New("at most 5 models may compete in one run")
+	}
+	for _, m := range append(slices.Clone(o.Models), o.Model, o.Reviewer) {
+		if m != "" && !reModel.MatchString(m) {
+			return fmt.Errorf("not a model name: %q", m)
+		}
+	}
+	return nil
 }

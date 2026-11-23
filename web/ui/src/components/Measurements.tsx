@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { Bar, BarChart, CartesianGrid, LabelList, XAxis } from 'recharts'
-import { CircleAlert, CircleCheck, CircleX, Download } from 'lucide-react'
+import { CircleAlert, CircleCheck, CircleX, Download, Trophy } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
@@ -12,7 +12,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { mb, ms, num, num1, pct } from '@/lib/format'
 import { cn } from '@/lib/utils'
-import type { Bucket, Func, Report, Run } from '@/lib/types'
+import type { Bucket, Candidate, Func, PassCount, Report, Run } from '@/lib/types'
 import { Empty, Origin } from './Views'
 
 type Open = (path: string, line?: number) => void
@@ -587,6 +587,118 @@ function Findings({ rep }: { rep: Report }) {
   )
 }
 
+const usd = (v?: number) => (v ? `$${v < 0.01 ? v.toFixed(4) : v.toFixed(3)}` : '–')
+const pc = (p: PassCount) => (p.total ? `${p.passed} of ${p.total}` : '–')
+
+const STATUS_LABEL: Record<Candidate['status'], string> = {
+  ran: 'ran', compile: 'does not compile', policy: 'policy violation', incomplete: 'incomplete answer', 'no answer': 'no answer',
+}
+
+function Tournament({ rep }: { rep: Report }) {
+  const t = rep.factory.tournament
+  if (!t) return null
+  const rows = [...t.candidates].sort((a, b) => b.score - a.score)
+  return (
+    <Section
+      title="Model tournament"
+      description={`${t.candidates.length} models wrote the custom RPCs and their tests. Each implementation ran against the visible examples and against the tests the other models wrote without seeing it, and the best-supported one was kept. Holdout examples took no part in the choice, so they still judge the winner fairly.`}
+    >
+      <Table>
+        <TableHeader>
+          <TableRow>
+            <TableHead>Model</TableHead>
+            <TableHead>Result</TableHead>
+            <TableHead className="text-right">Examples</TableHead>
+            <TableHead className="text-right">Others' tests</TableHead>
+            <TableHead className="text-right">Own tests</TableHead>
+            <TableHead className="text-right">Selection</TableHead>
+            <TableHead className="text-right">Tokens</TableHead>
+            <TableHead className="text-right">Cost</TableHead>
+            <TableHead className="text-right">Time</TableHead>
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          {rows.map((c) => (
+            <TableRow key={c.model} className={cn(c.chosen && 'bg-signal/15 hover:bg-signal/20')}>
+              <TableCell className="font-mono text-xs">
+                <span className="flex items-center gap-1.5">
+                  {c.chosen && <Trophy className="size-3.5" aria-label="chosen" />}
+                  {c.model}
+                </span>
+              </TableCell>
+              <TableCell className="text-xs">
+                {c.note ? (
+                  <Tooltip>
+                    <TooltipTrigger className={cn('underline decoration-dotted underline-offset-2', c.status !== 'ran' && 'text-destructive')}>{STATUS_LABEL[c.status]}</TooltipTrigger>
+                    <TooltipContent className="max-w-96 font-mono text-[11px]">{c.note}</TooltipContent>
+                  </Tooltip>
+                ) : (
+                  <span className={cn(c.status !== 'ran' && 'text-destructive')}>{STATUS_LABEL[c.status]}</span>
+                )}
+              </TableCell>
+              <TableCell className="text-right tabular-nums">{pc(c.visible)}</TableCell>
+              <TableCell className="text-right tabular-nums">
+                {c.cross && Object.keys(c.cross).length ? (
+                  <Tooltip>
+                    <TooltipTrigger className="underline decoration-dotted underline-offset-2">{pc(c.foreign)}</TooltipTrigger>
+                    <TooltipContent>
+                      {Object.entries(c.cross).map(([author, p]) => (
+                        <div key={author}>
+                          tests by {author}: {pc(p)}
+                        </div>
+                      ))}
+                    </TooltipContent>
+                  </Tooltip>
+                ) : (
+                  pc(c.foreign)
+                )}
+              </TableCell>
+              <TableCell className="text-right tabular-nums">{pc(c.own)}</TableCell>
+              <TableCell className="text-right tabular-nums">{c.score >= 0 ? c.score.toFixed(2) : '–'}</TableCell>
+              <TableCell className="text-right tabular-nums">{num(c.tokens_in + c.tokens_out)}</TableCell>
+              <TableCell className="text-right tabular-nums">{usd(c.cost_usd)}</TableCell>
+              <TableCell className="text-right tabular-nums">{ms(c.ms)}</TableCell>
+            </TableRow>
+          ))}
+        </TableBody>
+      </Table>
+      <p className="mt-3 text-xs text-muted-foreground">Selection weighs visible examples 50%, other models' tests 35% and the model's own tests 15%.</p>
+    </Section>
+  )
+}
+
+const SEVERITY: Record<string, string> = { bug: 'bg-destructive text-white', risk: 'bg-warn text-foreground', nit: 'bg-muted text-muted-foreground' }
+
+function Review({ rep, open }: { rep: Report; open: Open }) {
+  const r = rep.factory.review
+  if (!r) return null
+  const items = r.findings ?? []
+  return (
+    <Section title="Second-model review" description={`${r.model} reviewed the LLM-written code against the method docs. It reports; it never stops the line.`}>
+      {r.note && <p className="mb-3 text-xs text-muted-foreground">{r.note}</p>}
+      {items.length === 0 ? (
+        <p className="flex items-center gap-1.5 text-sm text-good">
+          <CircleCheck className="size-4" /> No defects reported.
+        </p>
+      ) : (
+        <ul className="space-y-2 text-sm">
+          {items.map((f, i) => (
+            <li key={i} className="flex items-start gap-2">
+              <Badge className={cn('mt-0.5 h-4 w-10 justify-center px-1 text-[10.5px]', SEVERITY[f.severity])}>{f.severity}</Badge>
+              <span>
+                {f.message}
+                <button className="block font-mono text-xs text-muted-foreground hover:text-foreground hover:underline" onClick={() => open(f.file, f.line)}>
+                  {f.file}:{f.line}
+                </button>
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </Section>
+  )
+}
+
 function Factory({ rep, run }: { rep: Report; run: Run }) {
   const fx = rep.factory
   return (
@@ -600,6 +712,7 @@ function Factory({ rep, run }: { rep: Report; run: Run }) {
           note={`${fx.llm_calls} calls${fx.rejected_writes?.length ? `, ${fx.rejected_writes.length} writes rejected` : ''}`}
         />
         <Tile label="Tokens" value={num(fx.tokens_in + fx.tokens_out)} note={`${num(fx.tokens_in)} in (${num(fx.tokens_cached ?? 0)} cached), ${num(fx.tokens_out)} out`} />
+        {fx.cost_usd ? <Tile label="LLM cost" value={usd(fx.cost_usd)} note="as reported by the provider" /> : null}
       </div>
     </Section>
   )
@@ -650,6 +763,7 @@ export function Measurements({ run, open }: { run: Run; open: Open }) {
         <Acceptance acc={acc} />
         <Mutation rep={rep} open={open} />
       </div>
+      <Tournament rep={rep} />
       <div className="grid gap-4 xl:grid-cols-2">
         <Size rep={rep} />
         <Origins rep={rep} />
@@ -671,8 +785,9 @@ export function Measurements({ run, open }: { run: Run; open: Open }) {
       <Functions rep={rep} open={open} />
       <div className="grid gap-4 xl:grid-cols-2">
         <Findings rep={rep} />
-        <Factory rep={rep} run={run} />
+        {rep.factory.review ? <Review rep={rep} open={open} /> : <Factory rep={rep} run={run} />}
       </div>
+      {rep.factory.review && <Factory rep={rep} run={run} />}
     </div>
   )
 }

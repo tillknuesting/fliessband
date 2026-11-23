@@ -1,7 +1,7 @@
 # Fliessband: a software factory for Go gRPC microservices
 
 Fliessband turns a short service spec (YAML) into a runnable, tested, deployable Go
-gRPC microservice, sends it through a line of 20 stations, and measures what it
+gRPC microservice, sends it through a line of 21 stations, and measures what it
 produced. A web UI shows the line running, the generated code with the origin of
 every file, the measurements, and a history of runs to compare.
 
@@ -52,6 +52,9 @@ is good.
 | Mutation testing works at scale when it skips noise ("arid" code) and reports survivors as prompts, not a hard gate | Petrović et al., *Practical Mutation Testing at Scale*, IEEE TSE 2021 | Mutation is a check, not a gate; logging, lock and lifecycle calls and constant arithmetic are not mutated; survivors are listed with the exact line |
 | LLMs can write tests that kill surviving mutants, and judge equivalent mutants; 73% of such tests were accepted by engineers | [Meta ACH](https://arxiv.org/abs/2501.12862) (FSE 2025) | When the LLM wrote code, its surviving mutants go back to it with a request for tests that kill them; tests are kept only if they pass on the real code and follow the policy; the model may name equivalent mutants |
 | LLM equivalent-mutant detection beats traditional methods | Tian et al., ISSTA 2024 ([arXiv](https://arxiv.org/abs/2408.01760)) | Equivalent mutants named by the model are left out of the score and counted separately |
+| Generating several solutions plus tests, then choosing the solution that agrees with the most independently generated tests ("dual execution agreement"), beats picking one sample | Chen et al., *CodeT*, ICLR 2023 ([arXiv](https://arxiv.org/abs/2207.10397)) | The implement tournament: each model's code runs against every other model's tests; agreement decides together with the visible examples |
+| Separating the test author from the code author catches errors that self-written tests share with the code | Huang et al., *AgentCoder* ([arXiv](https://arxiv.org/abs/2312.13010)) | Cross-tests come from other models, which never saw the code they test; a model's own tests weigh least |
+| Choosing among candidates by the evaluation set biases that set | standard holdout practice | Holdout examples run with every candidate but never count towards the choice, so they stay an unbiased check of the winner |
 | Self-repair helps, but its gains are bounded by feedback quality | Olausson et al., *Is Self-Repair a Silver Bullet for Code Generation?*, ICLR 2024 | At most 3 repairs, only when the failure is in files the model owns, each carrying the exact tool output |
 | Property-based tests check that code matches its spec, not only examples | [Kiro: property-based testing](https://kiro.dev/blog/property-based-testing/) (Nov 2025) | Generated Go fuzz targets state properties (page tokens round-trip; validation never panics and always reports field violations); the fuzz station explores them |
 | Go 1.25 to 1.27 bring container-aware `GOMAXPROCS`, `http.CrossOriginProtection`, `go fix` modernizers, Green Tea GC, a `uuid` package and a goroutine leak profile | Go [1.25](https://go.dev/doc/go1.25), [1.26](https://go.dev/doc/go1.26), [1.27](https://go.dev/doc/go1.27) release notes | Generated services target Go 1.27: UUIDv7 ids, a goroutine leak check in the service, server and store test packages, modernizer findings in the lint station; the factory uses `CrossOriginProtection` |
@@ -73,7 +76,7 @@ at a limit; the generated tests now include boundary cases.
    │  fliessband (one Go binary)    │◄───────────────────►│  Web UI      │
    │  spec     validate        │  CSRF, host check,  │  spec editor │
    │  gen      templates       │  token auth, CSP    │  live line   │
-   │  pipeline 20 stations     │                     │  measures    │
+   │  pipeline 21 stations     │                     │  measures    │
    │  policy   LLM file rules  │                     │  code, logs  │
    │  mutate   mutation tests  │                     │  history     │
    │  supply   SBOM, SLSA      │                     └──────────────┘
@@ -206,7 +209,9 @@ comparable. A failed gate caps the score at 40.
 - The gRPC A66 OpenTelemetry metrics plugin instead of `otelgrpc`.
 - AIP-154 etags and AIP-155 request ids for optimistic concurrency and
   idempotent creates.
-- Best-of-N sampling for the implement stage, picking the candidate that passes
-  the most stations.
+- Feeding the reviewer's "bug" findings back to the winning model as one more
+  repair, kept only if every gate still passes.
+- Merging tests from losing candidates that pass on the winner into its test
+  file, so their extra cases are not lost.
 - Container sandboxing for test runs (gVisor or similar) on shared factories.
 - Signed provenance and SBOMs; image builds in the line.

@@ -9,7 +9,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { postJSON } from '@/lib/api'
 import type { Example, FactoryStatus, Options, Validation } from '@/lib/types'
 
-const OPTIONS: { key: keyof Omit<Options, 'model' | 'llm'>; label: string }[] = [
+const OPTIONS: { key: keyof Omit<Options, 'model' | 'models' | 'reviewer' | 'llm'>; label: string }[] = [
   { key: 'mutation', label: 'Mutation testing: inject faults, see which tests catch them' },
   { key: 'fuzz', label: 'Fuzz each target for 3 seconds' },
   { key: 'integration', label: 'Test the PostgreSQL store in Docker' },
@@ -103,7 +103,8 @@ function Check({ v }: { v: Validation | null }) {
 
 export function SpecPanel(props: Props) {
   const { spec, onSpec, examples, example, onExample, validation, status, running, onStarted } = props
-  const [opts, setOpts] = useState<Options>({ mutation: true, fuzz: true, integration: true, smoke: true, vuln: true, llm: false, model: '' })
+  const [opts, setOpts] = useState<Options>({ mutation: true, fuzz: true, integration: true, smoke: true, vuln: true, llm: false, model: '', reviewer: '' })
+  const [modelText, setModelText] = useState('')
   const [starting, setStarting] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const canRun = !!validation?.ok && !running && !starting
@@ -113,7 +114,15 @@ export function SpecPanel(props: Props) {
     setStarting(true)
     setError(null)
     try {
-      const { id } = await postJSON<{ id: string }>('/api/runs', { spec, options: { ...opts, model: opts.model?.trim() } })
+      const { id } = await postJSON<{ id: string }>('/api/runs', {
+        spec,
+        options: {
+          ...opts,
+          model: undefined,
+          models: modelText.split(',').map((m) => m.trim()).filter(Boolean),
+          reviewer: opts.reviewer?.trim() || undefined,
+        },
+      })
       onStarted(id)
     } catch (err) {
       setError(`Could not start the run: ${(err as Error).message}`)
@@ -163,15 +172,33 @@ export function SpecPanel(props: Props) {
               Let the LLM implement custom RPCs
             </Label>
           </div>
-          <div className="flex items-center gap-2 pl-6">
-            <Label htmlFor="opt-model" className="text-xs text-muted-foreground">
-              Model
+          <div className="grid grid-cols-[64px_1fr] items-center gap-x-2 gap-y-1.5 pl-6">
+            <Label htmlFor="opt-models" className="text-xs text-muted-foreground">
+              Models
             </Label>
-            <Input id="opt-model" disabled={!status?.llm} placeholder="default" value={opts.model} onChange={(e) => setOpts({ ...opts, model: e.target.value })} className="h-7 text-xs" />
+            <Input
+              id="opt-models"
+              disabled={!status?.llm}
+              placeholder={status?.llm ? status.llm.models.join(', ') : 'default'}
+              value={modelText}
+              onChange={(e) => setModelText(e.target.value)}
+              className="h-7 font-mono text-xs"
+            />
+            <Label htmlFor="opt-reviewer" className="text-xs text-muted-foreground">
+              Reviewer
+            </Label>
+            <Input
+              id="opt-reviewer"
+              disabled={!status?.llm}
+              placeholder={status?.llm?.reviewer || 'none'}
+              value={opts.reviewer}
+              onChange={(e) => setOpts({ ...opts, reviewer: e.target.value })}
+              className="h-7 font-mono text-xs"
+            />
           </div>
           <p className="pl-6 text-xs text-muted-foreground">
             {status?.llm
-              ? `Uses ${status.llm.model} at ${new URL(status.llm.base_url).host}. It may only write custom.go and its test.`
+              ? `Through ${new URL(status.llm.base_url).host}. List several models, separated by commas, and they compete: each implementation is tested against the others' tests and the best one is kept. Models may only write custom.go and its test.`
               : 'Not configured: start fliessband with FLIESSBAND_LLM_API_KEY or OPENAI_API_KEY set.'}
           </p>
         </fieldset>

@@ -17,6 +17,7 @@ import (
 
 	"github.com/tillknuesting/fliessband/internal/gen"
 	"github.com/tillknuesting/fliessband/internal/llm"
+	"github.com/tillknuesting/fliessband/internal/metrics"
 )
 
 // forbiddenCustom imports os/exec: the policy station must stop it before
@@ -327,7 +328,7 @@ func TestChildEnvScrubsSecrets(t *testing.T) {
 				t.Errorf("credential-like variable %s passed to a child process", k)
 			}
 		}
-		if !strings.Contains(joined, "PATH=/opt/tools") || !strings.Contains(joined, "GOTOOLCHAIN=local") || !strings.Contains(joined, "EXTRA=1") {
+		if !strings.Contains(joined, "PATH=/opt/tools") || !strings.Contains(joined, "GOTOOLCHAIN=auto") || !strings.Contains(joined, "EXTRA=1") {
 			t.Errorf("child environment misses PATH, GOTOOLCHAIN or extras:\n%s", joined)
 		}
 		offline := strings.Contains(joined, "GOPROXY=off")
@@ -397,5 +398,141 @@ func TestQueueLimit(t *testing.T) {
 	m.mu.Unlock()
 	if _, err := m.Start([]byte("name: x\n"), Options{}); !errors.Is(err, ErrQueueFull) {
 		t.Fatalf("Start with a full queue: %v, want ErrQueueFull", err)
+	}
+}
+
+// buggyCustom skips input validation: an empty id reaches the store and
+// comes back NOT_FOUND instead of INVALID_ARGUMENT. Its own test only
+// checks the happy path, so it passes on its own code.
+const buggyCustom = `package service
+
+import (
+	"context"
+
+	pb "example.com/tasks/gen/tasks/v1"
+)
+
+func (s *Server) CompleteTask(ctx context.Context, req *pb.CompleteTaskRequest) (*pb.CompleteTaskResponse, error) {
+	task, err := s.store.UpdateTask(ctx, req.GetId(), func(t *pb.Task) error {
+		t.Done = true
+		return nil
+	})
+	if err != nil {
+		return nil, s.toStatus(ctx, err)
+	}
+	return &pb.CompleteTaskResponse{Task: task}, nil
+}
+`
+
+const happyTest = `package service
+
+import (
+	"testing"
+
+	pb "example.com/tasks/gen/tasks/v1"
+)
+
+func TestCompleteTaskHappy(t *testing.T) {
+	c, st := newClient(t)
+	x := seedTask(t, c, st, 0)
+	resp, err := c.CompleteTask(t.Context(), &pb.CompleteTaskRequest{Id: x.GetId()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !resp.GetTask().GetDone() {
+		t.Fatal("task is not done")
+	}
+}
+`
+
+func TestTournament(t *testing.T) {
+	toolsDir := tools(t)
+	var mu sync.Mutex
+	calls := map[string]int{}
+	fake := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var req struct {
+			Model    string        `json:"model"`
+			Messages []llm.Message `json:"messages"`
+		}
+		_ = json.Unmarshal(body, &req)
+		mu.Lock()
+		calls[req.Model]++
+		mu.Unlock()
+		var content string
+		switch req.Model {
+		case "vendor/good":
+			content = block("internal/service/custom.go", fixedCustom) + block("internal/service/custom_test.go", customTest)
+		case "vendor/buggy":
+			content = block("internal/service/custom.go", buggyCustom) + block("internal/service/custom_test.go", happyTest)
+		case "vendor/broken":
+			content = block("internal/service/custom.go", brokenCustom) + block("internal/service/custom_test.go", customTest)
+		case "vendor/reviewer":
+			content = "```json\n[{\"file\": \"internal/service/custom.go\", \"line\": 18, \"severity\": \"risk\", \"message\": \"UpdateTime uses the server clock.\"}," +
+				"{\"file\": \"internal/service/service.go\", \"line\": 1, \"severity\": \"bug\", \"message\": \"not under review, must be dropped\"}]\n```"
+		default:
+			http.Error(w, "unknown model", http.StatusBadRequest)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"choices": []any{map[string]any{"message": map[string]string{"role": "assistant", "content": content}}},
+			"usage":   map[string]any{"prompt_tokens": 1000, "completion_tokens": 300, "cost": 0.002},
+		})
+	}))
+	defer fake.Close()
+
+	src, err := os.ReadFile("../../specs/tasks.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := &llm.Client{BaseURL: fake.URL, APIKey: "test", Model: "vendor/good", HTTP: fake.Client()}
+	m, err := NewManager(t.TempDir(), toolsDir, client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := m.Start(src, Options{LLM: true, Models: []string{"vendor/buggy", "vendor/broken", "vendor/good"}, Reviewer: "vendor/reviewer"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.Wait(r.ID)
+	var got Run
+	if err := json.Unmarshal(r.JSON(), &got); err != nil {
+		t.Fatal(err)
+	}
+	for _, st := range got.Stages {
+		t.Logf("%-12s %-8s %s", st.ID, st.Status, st.Summary)
+	}
+	if got.Status != Passed {
+		t.Fatalf("run status = %s, want passed", got.Status)
+	}
+	fx := got.Report.Factory
+	tour := fx.Tournament
+	if tour == nil || tour.Winner != "vendor/good" || fx.LLMModel != "vendor/good" {
+		t.Fatalf("tournament = %+v, want vendor/good chosen", tour)
+	}
+	byModel := map[string]metrics.Candidate{}
+	for _, c := range tour.Candidates {
+		byModel[c.Model] = c
+		t.Logf("%-14s %-8s own %s visible %s foreign %s score %.2f", c.Model, c.Status, c.Own, c.Visible, c.Foreign, c.Score)
+	}
+	if c := byModel["vendor/broken"]; c.Status != "compile" {
+		t.Errorf("broken candidate = %+v, want a compile failure", c)
+	}
+	if c := byModel["vendor/buggy"]; c.Status != "ran" || c.Own.Passed != 1 || c.Foreign.Passed != 0 || c.Foreign.Total != 1 {
+		t.Errorf("buggy candidate = %+v, want own 1/1 and the good model's test failing", c)
+	}
+	if c := byModel["vendor/good"]; c.Foreign.Passed != 1 || c.Foreign.Total != 1 || !c.Chosen {
+		t.Errorf("good candidate = %+v, want the buggy model's test passing and chosen", c)
+	}
+	rev := fx.Review
+	if rev == nil || rev.Model != "vendor/reviewer" || len(rev.Findings) != 1 || rev.Findings[0].Severity != "risk" {
+		t.Errorf("review = %+v, want one risk on custom.go", rev)
+	}
+	if calls["vendor/reviewer"] != 1 || fx.LLMCalls != 4 || fx.CostUSD < 0.0079 {
+		t.Errorf("calls %v, LLMCalls %d, cost %.4f; want one call per model and $0.008", calls, fx.LLMCalls, fx.CostUSD)
+	}
+	b, _ := os.ReadFile(filepath.Join(r.ServiceDir(), "internal/service/custom.go"))
+	if !strings.Contains(string(b), "maxIDLen") {
+		t.Error("the service does not carry the winning implementation")
 	}
 }

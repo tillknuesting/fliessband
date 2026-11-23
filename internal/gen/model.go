@@ -28,6 +28,7 @@ type Model struct {
 	FullServiceName string // acme.inventory.v1.InventoryService
 	Port            int
 	GoVersion       string // go directive in go.mod
+	Toolchain       string // toolchain directive in go.mod
 	GoMinor         string // golang image tag: the minor version, so patch releases apply
 	Entities        []*EntityModel
 	Methods         []*MethodModel
@@ -118,6 +119,12 @@ type MethodModel struct {
 // uuid package (UUIDv7 ids) and the goroutine leak profile used in tests.
 const GoVersion = "1.27"
 
+// Toolchain pins the patch release generated modules build with: the
+// latest one, so govulncheck finds no fixed standard-library bugs. The go
+// command downloads it during the dependency stage, checked against the
+// Go checksum database.
+const Toolchain = "go1.27.4"
+
 // NewModel derives the template model from a validated spec.
 func NewModel(s *spec.Spec) *Model {
 	segs := strings.Split(s.Package, ".")
@@ -142,6 +149,7 @@ func NewModel(s *spec.Spec) *Model {
 		FullServiceName: s.Package + "." + svc,
 		Port:            s.Port,
 		GoVersion:       GoVersion,
+		Toolchain:       Toolchain,
 		GoMinor:         GoVersion,
 		OTel:            s.Features.OTel,
 		Health:          s.Features.HasHealth(),

@@ -65,12 +65,15 @@ export interface Report {
     total_ms: number; llm_model?: string; llm_calls: number; tokens_in: number; tokens_out: number; tokens_cached?: number
     repair_attempts: number; first_pass: boolean; rejected_writes?: string[] | null
     hardening?: { survivors: number; killed: number; equivalent: number; kept: boolean; note?: string }
+    cost_usd?: number
+    tournament?: Tournament
+    review?: { model: string; findings: ReviewFinding[] | null; note?: string }
   }
   score: { total: number; grade: string; capped: boolean; parts: ScorePart[] }
 }
 
 export interface Options {
-  llm: boolean; model?: string; smoke: boolean; vuln: boolean; mutation: boolean; fuzz: boolean; integration: boolean
+  llm: boolean; model?: string; models?: string[]; reviewer?: string; smoke: boolean; vuln: boolean; mutation: boolean; fuzz: boolean; integration: boolean
 }
 
 export interface Run {
@@ -91,6 +94,15 @@ export interface Validation {
 }
 
 export interface Tool { name: string; version: string; found: boolean }
-export interface FactoryStatus { tools: Tool[]; llm: { model: string; base_url: string } | null; version: string; auth: boolean }
+export interface FactoryStatus { tools: Tool[]; llm: { model: string; base_url: string; models: string[]; reviewer: string } | null; version: string; auth: boolean }
 export interface Example { name: string; file: string; source: string }
 export interface FileEntry { path: string; bytes: number; origin: string }
+
+export interface PassCount { passed: number; total: number }
+export interface Candidate {
+  model: string; status: 'ran' | 'compile' | 'policy' | 'incomplete' | 'no answer'; note?: string
+  own: PassCount; visible: PassCount; foreign: PassCount; cross?: Record<string, PassCount> | null
+  score: number; tokens_in: number; tokens_out: number; cost_usd?: number; ms: number; chosen: boolean
+}
+export interface Tournament { winner: string; candidates: Candidate[] }
+export interface ReviewFinding { file: string; line: number; severity: 'bug' | 'risk' | 'nit'; message: string }

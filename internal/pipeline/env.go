@@ -60,7 +60,7 @@ func (m *Manager) childEnv(network bool, extra ...string) []string {
 	if m.toolsBin != "" {
 		path = m.toolsBin + string(os.PathListSeparator) + path
 	}
-	env = append(env, "PATH="+path, "GOTOOLCHAIN=local", "GOWORK=off")
+	env = append(env, "PATH="+path, "GOTOOLCHAIN=auto", "GOWORK=off")
 	if !network {
 		env = append(env, "GOPROXY=off", "GOFLAGS=-mod=readonly")
 	}

@@ -38,26 +38,27 @@ type StageDef struct {
 // Stages is the line, in order. Gates stop the line when they fail; the
 // other stations measure and report.
 var Stages = []StageDef{
-	{"spec", "Spec", "github.com/tillknuesting/fliessband/spec", true, "Contract"},
+	{"spec", "Spec", "fliessband/spec", true, "Contract"},
 	{"scaffold", "Scaffold", "templates", true, "Contract"},
 	{"protolint", "Proto lint", "buf lint", true, "Contract"},
 	{"breaking", "Compatibility", "buf breaking", true, "Contract"},
 	{"codegen", "Codegen", "buf generate", true, "Contract"},
 	{"implement", "Implement", "LLM", false, "Build"},
-	{"policy", "Policy", "github.com/tillknuesting/fliessband/policy", true, "Build"},
+	{"policy", "Policy", "fliessband/policy", true, "Build"},
 	{"deps", "Dependencies", "go mod tidy", true, "Build"},
 	{"build", "Build", "go build", true, "Build"},
 	{"vet", "Vet", "go vet", true, "Build"},
 	{"lint", "Lint", "golangci-lint, go fix", false, "Build"},
 	{"test", "Test", "go test -race", true, "Verify"},
 	{"acceptance", "Acceptance", "spec examples", true, "Verify"},
-	{"mutation", "Mutation", "github.com/tillknuesting/fliessband/mutate", false, "Verify"},
+	{"review", "Review", "second-model review", false, "Verify"},
+	{"mutation", "Mutation", "fliessband/mutate", false, "Verify"},
 	{"fuzz", "Fuzz", "go test -fuzz", false, "Verify"},
 	{"vulncheck", "Vulnerabilities", "govulncheck", false, "Verify"},
 	{"integration", "Integration", "PostgreSQL in Docker", true, "Run"},
 	{"smoke", "Smoke", "grpc health + load", true, "Run"},
 	{"sbom", "Supply chain", "CycloneDX, SLSA", false, "Ship"},
-	{"measure", "Measure", "github.com/tillknuesting/fliessband/metrics", false, "Ship"},
+	{"measure", "Measure", "fliessband/metrics", false, "Ship"},
 }
 
 // StageState is the live state of one stage.
@@ -73,16 +74,20 @@ type StageState struct {
 
 // Options control one run.
 type Options struct {
-	LLM         bool   `json:"llm"`
-	Model       string `json:"model,omitempty"`
-	Smoke       bool   `json:"smoke"`
-	Vuln        bool   `json:"vuln"`
-	Mutation    bool   `json:"mutation"`
-	Fuzz        bool   `json:"fuzz"`
-	Integration bool   `json:"integration"`
-	MaxRepairs  int    `json:"max_repairs"`
-	MaxMutants  int    `json:"max_mutants,omitempty"`
-	FuzzTime    string `json:"fuzz_time,omitempty"` // per target, e.g. "3s"
+	LLM   bool   `json:"llm"`
+	Model string `json:"model,omitempty"`
+	// Models compete to implement the custom RPCs; more than one starts a
+	// tournament. Empty means the factory's configured candidates.
+	Models      []string `json:"models,omitempty"`
+	Reviewer    string   `json:"reviewer,omitempty"` // reviews the result; empty means the factory's default
+	Smoke       bool     `json:"smoke"`
+	Vuln        bool     `json:"vuln"`
+	Mutation    bool     `json:"mutation"`
+	Fuzz        bool     `json:"fuzz"`
+	Integration bool     `json:"integration"`
+	MaxRepairs  int      `json:"max_repairs"`
+	MaxMutants  int      `json:"max_mutants,omitempty"`
+	FuzzTime    string   `json:"fuzz_time,omitempty"` // per target, e.g. "3s"
 }
 
 // DefaultOptions turn every check on.

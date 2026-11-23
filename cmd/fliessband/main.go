@@ -154,6 +154,8 @@ func runCmd(args []string) error {
 	data := fs.String("data", "data", "directory for runs")
 	useLLM := fs.Bool("llm", false, "let the LLM implement custom RPCs")
 	model := fs.String("model", "", "LLM model (default from FLIESSBAND_LLM_MODEL)")
+	models := fs.String("models", "", "comma-separated models that compete to implement the RPCs (default FLIESSBAND_LLM_MODELS)")
+	reviewer := fs.String("reviewer", "", "model that reviews the result (default FLIESSBAND_LLM_REVIEWER)")
 	smoke := fs.Bool("smoke", true, "start the binary and load-test it")
 	vuln := fs.Bool("vuln", true, "run govulncheck")
 	mutation := fs.Bool("mutation", true, "run mutation testing")
@@ -174,7 +176,7 @@ func runCmd(args []string) error {
 	if err != nil {
 		return err
 	}
-	r, err := m.Start(src, pipeline.Options{LLM: *useLLM, Model: *model, Smoke: *smoke, Vuln: *vuln, Mutation: *mutation,
+	r, err := m.Start(src, pipeline.Options{LLM: *useLLM, Model: *model, Models: llm.SplitModels(*models), Reviewer: *reviewer, Smoke: *smoke, Vuln: *vuln, Mutation: *mutation,
 		MaxMutants: *maxMutants, Fuzz: *fuzz, FuzzTime: *fuzzTime, Integration: *integration})
 	if err != nil {
 		return err

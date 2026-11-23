@@ -251,6 +251,61 @@ type Factory struct {
 	RejectedWrites []string           `json:"rejected_writes,omitempty"`
 	Prompts        []PromptRecord     `json:"prompts,omitempty"`
 	Hardening      *Hardening         `json:"hardening,omitempty"`
+	CostUSD        float64            `json:"cost_usd,omitempty"` // as reported by the provider
+	Tournament     *Tournament        `json:"tournament,omitempty"`
+	Review         *Review            `json:"review,omitempty"`
+}
+
+// PassCount is how many of a set of tests passed.
+type PassCount struct {
+	Passed int `json:"passed"`
+	Total  int `json:"total"`
+}
+
+func (p PassCount) String() string {
+	if p.Total == 0 {
+		return "–"
+	}
+	return fmt.Sprintf("%d/%d", p.Passed, p.Total)
+}
+
+// Tournament records how competing models' implementations were judged.
+type Tournament struct {
+	Winner     string      `json:"winner"`
+	Candidates []Candidate `json:"candidates"`
+}
+
+// Candidate is one model's entry in the tournament.
+type Candidate struct {
+	Model       string               `json:"model"`
+	Status      string               `json:"status"` // ran, compile, policy, incomplete, no answer
+	Note        string               `json:"note,omitempty"`
+	Own         PassCount            `json:"own"`                    // its own tests on its own code
+	Visible     PassCount            `json:"visible"`                // visible spec examples
+	Foreign     PassCount            `json:"foreign"`                // every other model's tests on its code
+	Cross       map[string]PassCount `json:"cross,omitempty"`        // per test author
+	FailedTests []string             `json:"failed_tests,omitempty"` // other models' tests it fails, as "author: TestName"
+	Score       float64              `json:"score"`                  // selection score, 0..1; negative when it did not run
+	TokensIn    int                  `json:"tokens_in"`
+	TokensOut   int                  `json:"tokens_out"`
+	CostUSD     float64              `json:"cost_usd,omitempty"`
+	Ms          float64              `json:"ms"`
+	Chosen      bool                 `json:"chosen"`
+}
+
+// Review is a second model's review of the LLM-written code.
+type Review struct {
+	Model    string          `json:"model"`
+	Findings []ReviewFinding `json:"findings"`
+	Note     string          `json:"note,omitempty"`
+}
+
+// ReviewFinding is one problem the reviewer reported.
+type ReviewFinding struct {
+	File     string `json:"file"`
+	Line     int    `json:"line"`
+	Severity string `json:"severity"` // bug, risk, nit
+	Message  string `json:"message"`
 }
 
 // PromptRecord identifies one LLM call for provenance: what was asked, by

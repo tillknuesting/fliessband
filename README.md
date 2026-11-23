@@ -20,7 +20,7 @@
 </p>
 
 <p align="center">
-  <img src="docs/demo.gif" width="900" alt="Fliessband running a spec through its 20 stations, then showing the score, measurements, generated code and run history">
+  <img src="docs/demo.gif" width="900" alt="Fliessband running a spec through its 21 stations, then showing the score, measurements, generated code and run history">
 </p>
 
 *Fließband* (FLEES-bahnt) is German for assembly line.
@@ -110,7 +110,7 @@ The UI shows the generated proto contract live as you type.
 
 ## The line
 
-Twenty stations in five phases. Gates stop the line when they fail; checks
+Twenty-one stations in five phases. Gates stop the line when they fail; checks
 report and let it continue. Some gates send failures back to the LLM, up to
 three times.
 
@@ -120,13 +120,14 @@ three times.
 | | Proto lint | `buf lint` STANDARD | yes |
 | | Compatibility | `buf breaking` against the last passing run of the service | yes |
 | | Codegen | `buf generate` | yes |
-| Build | Implement | the LLM writes the custom RPCs (optional) | no |
+| Build | Implement | one LLM, or a tournament of several, writes the custom RPCs (optional) | no |
 | | Policy | allowed imports; no `init`, `panic` or directives; tests must assert | yes, repairable |
 | | Dependencies | `go mod tidy`; every later station runs offline | yes |
 | | Build, Vet | `go build`, `go vet` | yes, repairable |
 | | Lint | golangci-lint v2, `go fix -diff` modernizers | no |
 | Verify | Test | `go test -race -cover`, goroutine leak check | yes, repairable |
 | | Acceptance | the spec's examples, including holdouts | yes, repairable |
+| | Review | a second model reviews the code (optional) | no |
 | | Mutation | injected faults; surviving mutants go back to the LLM | no |
 | | Fuzz | fuzz targets, 3 s each | no |
 | | Vulnerabilities | `govulncheck` | no |
@@ -182,6 +183,42 @@ make serve
 
 `OPENAI_BASE_URL` and `OPENAI_API_KEY` work too. Child processes never see
 these variables.
+
+## Several models: tournament and review
+
+Models from different vendors make different mistakes. With a router such as
+[OpenRouter](https://openrouter.ai), one key reaches all of them, and
+Fliessband uses that:
+
+```bash
+FLIESSBAND_LLM_BASE_URL=https://openrouter.ai/api/v1 \
+FLIESSBAND_LLM_API_KEY=sk-or-... \
+FLIESSBAND_LLM_MODELS=anthropic/claude-haiku-5.5,openai/gpt-5.6-luna,qwen/qwen3.8-flash \
+FLIESSBAND_LLM_REVIEWER=google/gemini-3.8-flash \
+make serve
+```
+
+**Tournament.** Each listed model writes the custom RPCs and their tests, in
+parallel. Then every implementation runs against:
+
+- the visible spec examples (50% of the selection score)
+- the tests every *other* model wrote without seeing it (35%), after CodeT's
+  dual execution agreement
+- its own tests (15%)
+
+The best-supported implementation goes down the line; the others are
+recorded. A model whose own tests are too weak to catch its own bug is caught
+by its rivals' tests. Holdout examples run but never count towards the
+choice, so they still judge the winner fairly. Repairs and test hardening go
+to the winning model.
+
+**Review.** After the acceptance station, a reviewer model (ideally from
+another vendor) reads the final code against the method docs and reports
+likely bugs and risks, each linked to its line. It reports; it never stops
+the line.
+
+With OpenRouter, every call's cost is recorded, per candidate and per run.
+The CLI takes `-models` and `-reviewer`, and the UI has fields for both.
 
 ## What a generated service gets
 

@@ -37,6 +37,7 @@ type executor struct {
 	failOut   string // output of the last failing gate, for the repair loop
 	failStage string
 	llmWrote  bool
+	winner    string   // the model whose implementation was chosen
 	testJSON  string   // go test -json output of the last test run
 	pending   []string // custom methods still stubbed
 	db        *postgresDB
@@ -139,6 +140,7 @@ func (x *executor) run(ctx context.Context) {
 		ok = x.verify(ctx)
 	}
 	if ok {
+		x.do(ctx, "review", x.stageReview)
 		if x.r.Options.Mutation {
 			x.do(ctx, "mutation", x.stageMutation)
 		}
@@ -512,13 +514,14 @@ func (x *executor) llmContext() (llm.Context, error) {
 }
 
 // record accounts for one LLM call.
-func (x *executor) record(st *StageState, purpose string, res llm.Result) {
+func (x *executor) record(st *StageState, purpose, model string, res llm.Result) {
 	f := &x.rep.Factory
 	f.LLMCalls++
+	f.CostUSD += res.Usage.CostUSD
 	f.TokensIn += res.Usage.PromptTokens
 	f.TokensOut += res.Usage.CompletionTokens
 	f.TokensCached += res.Usage.CachedTokens
-	f.Prompts = append(f.Prompts, metrics.PromptRecord{Purpose: purpose, SHA256: res.PromptSHA, Model: x.llmModel()})
+	f.Prompts = append(f.Prompts, metrics.PromptRecord{Purpose: purpose, SHA256: res.PromptSHA, Model: model})
 	if len(res.Rejected) > 0 {
 		f.RejectedWrites = append(f.RejectedWrites, res.Rejected...)
 		x.log(st, "rejected writes outside the files the model owns: "+strings.Join(res.Rejected, ", "))
@@ -526,6 +529,9 @@ func (x *executor) record(st *StageState, purpose string, res llm.Result) {
 }
 
 func (x *executor) llmModel() string {
+	if x.winner != "" {
+		return x.winner
+	}
 	if x.r.Options.Model != "" {
 		return x.r.Options.Model
 	}
@@ -533,6 +539,25 @@ func (x *executor) llmModel() string {
 		return x.m.llm.Model
 	}
 	return ""
+}
+
+// models returns the models that compete to implement the service: the
+// run's own choice, else the factory's configured candidates.
+func (x *executor) models() []string {
+	if len(x.r.Options.Models) > 0 {
+		return x.r.Options.Models
+	}
+	if x.r.Options.Model != "" {
+		return []string{x.r.Options.Model}
+	}
+	return x.m.llm.Candidates()
+}
+
+func (x *executor) reviewer() string {
+	if x.r.Options.Reviewer != "" {
+		return x.r.Options.Reviewer
+	}
+	return x.m.llm.Reviewer
 }
 
 func (x *executor) writeOwned(st *StageState, files map[string]string) error {
@@ -558,22 +583,27 @@ func (x *executor) stageImplement(ctx context.Context, st *StageState) error {
 	if x.m.llm == nil {
 		return warn("no LLM configured (set FLIESSBAND_LLM_API_KEY or OPENAI_API_KEY): %s left as stubs", fmtCount(n, "RPC", "RPCs"))
 	}
-	x.rep.Factory.LLMModel = x.llmModel()
 	in, err := x.llmContext()
 	if err != nil {
 		return err
 	}
+	models := x.models()
+	if len(models) > 1 {
+		return x.tournament(ctx, st, models, in)
+	}
+	x.winner = models[0]
+	x.rep.Factory.LLMModel = x.llmModel()
 	x.log(st, fmt.Sprintf("asking %s to implement %s", x.llmModel(), fmtCount(n, "RPC", "RPCs")))
 	res, err := x.m.llm.Implement(ctx, x.llmModel(), in)
-	x.record(st, "implement", res)
+	x.record(st, "implement", x.llmModel(), res)
 	if err != nil {
 		return warn("LLM call failed, stubs kept: %v", err)
 	}
 	if err := x.writeOwned(st, res.Files); err != nil {
 		return err
 	}
-	x.summary(st, "%s written by %s, %d tokens in (%d cached), %d out", fmtCount(n, "RPC", "RPCs"), x.llmModel(),
-		res.Usage.PromptTokens, res.Usage.CachedTokens, res.Usage.CompletionTokens)
+	x.summary(st, "%s written by %s, %d tokens in (%d cached), %d out%s", fmtCount(n, "RPC", "RPCs"), x.llmModel(),
+		res.Usage.PromptTokens, res.Usage.CachedTokens, res.Usage.CompletionTokens, usd(res.Usage.CostUSD))
 	return nil
 }
 
@@ -586,7 +616,7 @@ func (x *executor) repair(ctx context.Context, failed string, attempt int) bool 
 	if err == nil {
 		var res llm.Result
 		res, err = x.m.llm.Repair(ctx, x.llmModel(), in, failed, x.failOut)
-		x.record(st, "repair", res)
+		x.record(st, "repair", x.llmModel(), res)
 		if err == nil {
 			err = x.writeOwned(st, res.Files)
 		}
@@ -1211,4 +1241,53 @@ func fmtCount(n int, one, many string) string {
 		return fmt.Sprintf("1 %s", one)
 	}
 	return fmt.Sprintf("%d %s", n, many)
+}
+
+// usd formats a cost for a summary, or nothing when it is unknown.
+func usd(v float64) string {
+	if v <= 0 {
+		return ""
+	}
+	return fmt.Sprintf(", $%.4f", v)
+}
+
+// stageReview has a second model review the LLM-written code against the
+// method docs. It reports; it never stops the line.
+func (x *executor) stageReview(ctx context.Context, st *StageState) error {
+	if !x.llmWrote || x.m.llm == nil || !x.r.Options.LLM {
+		return skip("no LLM-written code to review")
+	}
+	model := x.reviewer()
+	if model == "" {
+		return skip("no reviewer model configured (FLIESSBAND_LLM_REVIEWER)")
+	}
+	in, err := x.llmContext()
+	if err != nil {
+		return err
+	}
+	x.log(st, "asking "+model+" to review custom.go and custom_test.go")
+	found, res, err := x.m.llm.Review(ctx, model, in)
+	x.record(st, "review", model, res)
+	rev := &metrics.Review{Model: model}
+	x.rep.Factory.Review = rev
+	if err != nil {
+		rev.Note = err.Error()
+		return warn("review failed: %v", err)
+	}
+	bugs := 0
+	for _, f := range found {
+		rev.Findings = append(rev.Findings, metrics.ReviewFinding(f))
+		x.log(st, fmt.Sprintf("%s %s:%d %s", f.Severity, f.File, f.Line, f.Message))
+		if f.Severity == "bug" {
+			bugs++
+		}
+	}
+	if model == x.llmModel() {
+		rev.Note = "the reviewer is the model that wrote the code; a different model catches more"
+	}
+	if bugs > 0 {
+		return warn("%s reports %s and %d other findings", model, fmtCount(bugs, "likely bug", "likely bugs"), len(found)-bugs)
+	}
+	x.summary(st, "%s found no bugs (%d other findings)%s", model, len(found), usd(res.Usage.CostUSD))
+	return nil
 }

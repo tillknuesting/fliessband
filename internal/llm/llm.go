@@ -27,8 +27,32 @@ import (
 type Client struct {
 	BaseURL string
 	APIKey  string
-	Model   string
-	HTTP    *http.Client
+	Model   string   // the default model
+	Models  []string // candidate models for the implement tournament; empty means Model alone
+	// Reviewer is a model that reviews the winning code; empty turns the
+	// review station off.
+	Reviewer string
+	HTTP     *http.Client
+}
+
+// Candidates returns the models that compete to implement the service.
+func (c *Client) Candidates() []string {
+	if len(c.Models) > 0 {
+		return c.Models
+	}
+	return []string{c.Model}
+}
+
+// SplitModels parses a comma-separated model list, dropping blanks and
+// duplicates.
+func SplitModels(s string) []string {
+	var out []string
+	for _, m := range strings.Split(s, ",") {
+		if m = strings.TrimSpace(m); m != "" && !slices.Contains(out, m) {
+			out = append(out, m)
+		}
+	}
+	return out
 }
 
 // FromEnv builds a client from FLIESSBAND_LLM_* or OPENAI_* variables. It returns
@@ -37,17 +61,29 @@ type Client struct {
 //	FLIESSBAND_LLM_BASE_URL / OPENAI_BASE_URL  (default https://api.openai.com/v1)
 //	FLIESSBAND_LLM_API_KEY  / OPENAI_API_KEY
 //	FLIESSBAND_LLM_MODEL    (default chosen from the base URL)
+//	FLIESSBAND_LLM_MODELS   comma-separated candidates that compete (optional)
+//	FLIESSBAND_LLM_REVIEWER a model that reviews the result (optional)
+//
+// With OpenRouter (https://openrouter.ai/api/v1) one key reaches models of
+// every major provider, so candidates can come from different vendors.
 func FromEnv() *Client {
 	key := first(os.Getenv("FLIESSBAND_LLM_API_KEY"), os.Getenv("OPENAI_API_KEY"))
 	if key == "" {
 		return nil
 	}
 	base := strings.TrimRight(first(os.Getenv("FLIESSBAND_LLM_BASE_URL"), os.Getenv("OPENAI_BASE_URL"), "https://api.openai.com/v1"), "/")
+	models := SplitModels(os.Getenv("FLIESSBAND_LLM_MODELS"))
+	model := os.Getenv("FLIESSBAND_LLM_MODEL")
+	if model == "" && len(models) > 0 {
+		model = models[0]
+	}
 	return &Client{
-		BaseURL: base,
-		APIKey:  key,
-		Model:   first(os.Getenv("FLIESSBAND_LLM_MODEL"), defaultModel(base)),
-		HTTP:    &http.Client{Timeout: 6 * time.Minute},
+		BaseURL:  base,
+		APIKey:   key,
+		Model:    first(model, defaultModel(base)),
+		Models:   models,
+		Reviewer: strings.TrimSpace(os.Getenv("FLIESSBAND_LLM_REVIEWER")),
+		HTTP:     &http.Client{Timeout: 6 * time.Minute},
 	}
 }
 
@@ -56,7 +92,7 @@ func defaultModel(base string) string {
 	case strings.Contains(base, "deepseek"):
 		return "deepseek-chat"
 	case strings.Contains(base, "openrouter"):
-		return "openai/gpt-5-mini"
+		return "anthropic/claude-haiku-5.5"
 	case strings.Contains(base, "z.ai"), strings.Contains(base, "bigmodel"):
 		return "glm-4.6"
 	}
@@ -82,9 +118,15 @@ type Message struct {
 // provider served from its prompt cache (OpenAI reports them as
 // prompt_tokens_details.cached_tokens, DeepSeek as prompt_cache_hit_tokens).
 type Usage struct {
-	PromptTokens     int `json:"prompt_tokens"`
-	CompletionTokens int `json:"completion_tokens"`
-	CachedTokens     int `json:"-"`
+	PromptTokens     int     `json:"prompt_tokens"`
+	CompletionTokens int     `json:"completion_tokens"`
+	CachedTokens     int     `json:"-"`
+	CostUSD          float64 `json:"cost"` // reported by OpenRouter; 0 when the provider does not say
+}
+
+// Add sums two usages.
+func (u Usage) Add(o Usage) Usage {
+	return Usage{u.PromptTokens + o.PromptTokens, u.CompletionTokens + o.CompletionTokens, u.CachedTokens + o.CachedTokens, u.CostUSD + o.CostUSD}
 }
 
 type usageJSON struct {
@@ -95,21 +137,57 @@ type usageJSON struct {
 	CacheHit int `json:"prompt_cache_hit_tokens"`
 }
 
-// Chat sends messages and returns the first choice's content.
+// Chat sends messages and returns the first choice's content. Rate limits,
+// gateway errors and dropped connections are retried twice with backoff.
 func (c *Client) Chat(ctx context.Context, model string, msgs []Message) (string, Usage, error) {
 	if model == "" {
 		model = c.Model
 	}
-	body, _ := json.Marshal(map[string]any{"model": model, "messages": msgs})
+	var lastErr error
+	for attempt, wait := range []time.Duration{0, 3 * time.Second, 10 * time.Second} {
+		if attempt > 0 {
+			select {
+			case <-ctx.Done():
+				return "", Usage{}, ctx.Err()
+			case <-time.After(wait):
+			}
+		}
+		content, u, err := c.chatOnce(ctx, model, msgs)
+		var te transientError
+		if err == nil || !errors.As(err, &te) {
+			return content, u, err
+		}
+		lastErr = err
+	}
+	return "", Usage{}, lastErr
+}
+
+// transientError marks a failure worth retrying.
+type transientError struct{ error }
+
+func (e transientError) Unwrap() error { return e.error }
+
+func (c *Client) chatOnce(ctx context.Context, model string, msgs []Message) (string, Usage, error) {
+	payload := map[string]any{"model": model, "messages": msgs}
+	if c.isOpenRouter() {
+		payload["usage"] = map[string]bool{"include": true} // report the cost of each call
+	}
+	body, _ := json.Marshal(payload)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.BaseURL+"/chat/completions", bytes.NewReader(body))
 	if err != nil {
 		return "", Usage{}, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+c.APIKey)
+	if c.isOpenRouter() {
+		req.Header.Set("X-Title", "Fliessband")
+	}
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
-		return "", Usage{}, err
+		if ctx.Err() != nil {
+			return "", Usage{}, err
+		}
+		return "", Usage{}, transientError{err}
 	}
 	defer func() { _ = resp.Body.Close() }()
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
@@ -117,7 +195,12 @@ func (c *Client) Chat(ctx context.Context, model string, msgs []Message) (string
 		return "", Usage{}, err
 	}
 	if resp.StatusCode != http.StatusOK {
-		return "", Usage{}, fmt.Errorf("LLM API %s: %s", resp.Status, truncate(string(raw), 500))
+		err := fmt.Errorf("LLM API %s: %s", resp.Status, truncate(string(raw), 500))
+		switch resp.StatusCode {
+		case http.StatusTooManyRequests, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+			return "", Usage{}, transientError{err}
+		}
+		return "", Usage{}, err
 	}
 	var out struct {
 		Choices []struct {
@@ -131,10 +214,12 @@ func (c *Client) Chat(ctx context.Context, model string, msgs []Message) (string
 	u := out.Usage.Usage
 	u.CachedTokens = max(out.Usage.Details.CachedTokens, out.Usage.CacheHit)
 	if len(out.Choices) == 0 {
-		return "", u, errors.New("LLM returned no choices")
+		return "", u, transientError{errors.New("LLM returned no choices")}
 	}
 	return out.Choices[0].Message.Content, u, nil
 }
+
+func (c *Client) isOpenRouter() bool { return strings.Contains(c.BaseURL, "openrouter.ai") }
 
 // Context is what the model sees about the service.
 type Context struct {
@@ -268,4 +353,72 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return s[:n] + "\n…(truncated)"
+}
+
+// ReviewFinding is one problem a reviewing model reports.
+type ReviewFinding struct {
+	File     string `json:"file"`
+	Line     int    `json:"line"`
+	Severity string `json:"severity"` // bug, risk or nit
+	Message  string `json:"message"`
+}
+
+const reviewSystem = `You are a strict Go code reviewer in a software factory. Another model wrote the files under "Files under review" to implement the RPCs described in the task. They already compile and pass their tests and the visible examples.
+
+Find real defects: behaviour that contradicts a method's doc, missing validation or error codes the doc requires, races, non-atomic read-modify-write, unbounded loops or memory, wrong pagination, swallowed errors, and tests that would pass with a broken implementation. Do not report style, naming or formatting, and do not report anything you are not confident about.
+
+Reply with one fenced json block holding an array (empty if you find nothing) of objects {"file": path, "line": number, "severity": "bug"|"risk"|"nit", "message": one or two sentences}. Write nothing else.`
+
+var reJSON = regexp.MustCompile("(?s)```json\\s*\\n(.*?)\\n```")
+
+// Review asks a model to review the owned files for defects. It sees what
+// the implementer saw (contract, reference code, visible examples), never
+// the holdouts.
+func (c *Client) Review(ctx context.Context, model string, in Context) ([]ReviewFinding, Result, error) {
+	var b strings.Builder
+	fmt.Fprintf(&b, "## API contract\n\n```proto\n%s\n```\n", in.Proto)
+	b.WriteString("\n## Reference files (read only)\n")
+	for _, p := range sortedKeys(in.Files) {
+		fmt.Fprintf(&b, "\n### %s\n\n```go\n%s\n```\n", p, in.Files[p])
+	}
+	b.WriteString("\n## Files under review\n")
+	for _, p := range sortedKeys(in.Owned) {
+		fmt.Fprintf(&b, "\n### %s\n\n```go\n%s\n```\n", p, numbered(in.Owned[p]))
+	}
+	b.WriteString("\n## Task\n\nReview the files under review. The methods they implement:\n\n")
+	b.WriteString(in.MethodBrief)
+	sum := sha256.Sum256([]byte(reviewSystem + "\n" + b.String()))
+	res := Result{PromptSHA: hex.EncodeToString(sum[:])}
+	reply, usage, err := c.Chat(ctx, model, []Message{{Role: "system", Content: reviewSystem}, {Role: "user", Content: b.String()}})
+	res.Usage = usage
+	if err != nil {
+		return nil, res, err
+	}
+	raw := strings.TrimSpace(reply)
+	if m := reJSON.FindStringSubmatch(reply); m != nil {
+		raw = m[1]
+	}
+	var findings []ReviewFinding
+	if err := json.Unmarshal([]byte(raw), &findings); err != nil {
+		return nil, res, fmt.Errorf("the review is not a JSON array: %s", truncate(reply, 200))
+	}
+	kept := findings[:0]
+	for _, f := range findings {
+		if _, owned := in.Owned[f.File]; owned && f.Message != "" {
+			if f.Severity != "bug" && f.Severity != "risk" {
+				f.Severity = "nit"
+			}
+			kept = append(kept, f)
+		}
+	}
+	return kept, res, nil
+}
+
+// numbered prefixes lines with their numbers so findings can point at them.
+func numbered(src string) string {
+	var b strings.Builder
+	for i, l := range strings.Split(strings.TrimRight(src, "\n"), "\n") {
+		fmt.Fprintf(&b, "%4d  %s\n", i+1, l)
+	}
+	return b.String()
 }

@@ -227,7 +227,7 @@ func (x *executor) harden(ctx context.Context, st *StageState, ms []mutate.Mutan
 		return
 	}
 	res, err := x.m.llm.Harden(ctx, x.llmModel(), in, testFile, desc.String())
-	x.record(st, "harden", res)
+	x.record(st, "harden", x.llmModel(), res)
 	for _, id := range res.Equivalent {
 		for _, i := range idx {
 			if ms[i].ID == id {
