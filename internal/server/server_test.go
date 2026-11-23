@@ -123,3 +123,11 @@ func TestTokenAuth(t *testing.T) {
 		}
 	}
 }
+
+func TestStatusReportsSandbox(t *testing.T) {
+	h := newTestHandler(t, Config{LoopbackOnly: true})
+	w := do(h, "GET", "http://localhost:7070/api/status", nil)
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"sandbox":{"mode":"none","contained":false`) {
+		t.Fatalf("status: %d %s", w.Code, w.Body.String())
+	}
+}

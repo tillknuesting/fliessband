@@ -329,6 +329,23 @@ type Runner struct {
 	Covered  func(file string, line int) bool
 	Prepare  func(*exec.Cmd) // e.g. process-group isolation
 	Progress func(done, total int, m Mutant)
+	// Command, when set, builds the go command instead (args start after
+	// "go"), e.g. to run it in a sandbox; Env and Prepare are then unused.
+	Command func(ctx context.Context, dir string, args []string) *exec.Cmd
+	TempDir string // where mutant sources and overlays are written; default os.TempDir
+}
+
+// command builds one go command.
+func (r *Runner) command(ctx context.Context, args []string) *exec.Cmd {
+	if r.Command != nil {
+		return r.Command(ctx, r.Root, args)
+	}
+	cmd := exec.CommandContext(ctx, "go", args...)
+	cmd.Dir, cmd.Env = r.Root, r.Env
+	if r.Prepare != nil {
+		r.Prepare(cmd)
+	}
+	return cmd
 }
 
 // Baseline runs the tests of each package once without mutants. It returns
@@ -336,12 +353,7 @@ type Runner struct {
 func (r *Runner) Baseline(ctx context.Context, pkgs []string) (time.Duration, error) {
 	start := time.Now()
 	args := append([]string{"test", "-count=1", "-vet=off"}, r.Args...)
-	cmd := exec.CommandContext(ctx, "go", append(args, pkgs...)...)
-	cmd.Dir, cmd.Env = r.Root, r.Env
-	if r.Prepare != nil {
-		r.Prepare(cmd)
-	}
-	if out, err := cmd.CombinedOutput(); err != nil {
+	if out, err := r.command(ctx, append(args, pkgs...)).CombinedOutput(); err != nil {
 		return 0, fmt.Errorf("tests fail without mutants: %s", lastLines(string(out), 8))
 	}
 	return time.Since(start), nil
@@ -349,7 +361,7 @@ func (r *Runner) Baseline(ctx context.Context, pkgs []string) (time.Duration, er
 
 // Run executes the mutants and returns them with their status set.
 func (r *Runner) Run(ctx context.Context, ms []Mutant) ([]Mutant, error) {
-	tmp, err := os.MkdirTemp("", "fliessband-mutants-")
+	tmp, err := os.MkdirTemp(r.TempDir, "fliessband-mutants-")
 	if err != nil {
 		return nil, err
 	}
@@ -422,12 +434,7 @@ func (r *Runner) runOne(ctx context.Context, tmp string, m *Mutant, src []byte) 
 	args := append([]string{"test", "-overlay=" + overlay, "-count=1", "-failfast", "-vet=off",
 		"-timeout=" + r.Timeout.String()}, r.Args...)
 	args = append(args, "./"+filepath.ToSlash(filepath.Dir(m.File)))
-	cmd := exec.CommandContext(runCtx, "go", args...)
-	cmd.Dir, cmd.Env = r.Root, r.Env
-	if r.Prepare != nil {
-		r.Prepare(cmd)
-	}
-	out, err := cmd.CombinedOutput()
+	out, err := r.command(runCtx, args).CombinedOutput()
 	switch {
 	case err == nil:
 		m.Status = Survived

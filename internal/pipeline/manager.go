@@ -21,6 +21,7 @@ import (
 
 	"github.com/tillknuesting/fliessband/internal/llm"
 	"github.com/tillknuesting/fliessband/internal/metrics"
+	"github.com/tillknuesting/fliessband/internal/sandbox"
 	"github.com/tillknuesting/fliessband/internal/spec"
 )
 
@@ -53,6 +54,9 @@ type Manager struct {
 	dockerMu   sync.Mutex
 	dockerSeen time.Time
 	dockerInfo dockerInfo
+
+	sandbox     sandbox.Config // how generated code is executed
+	sandboxArch string         // CPU architecture of the sandbox's Linux host
 
 	toolsMu   sync.Mutex
 	tools     []Tool
@@ -212,7 +216,7 @@ func (m *Manager) Start(src []byte, opts Options) (*Run, error) {
 			m.mu.Unlock()
 		}()
 		_ = os.WriteFile(filepath.Join(r.Dir(), "fliessband.pid"), []byte(strconv.Itoa(os.Getpid())), 0o600)
-		x := &executor{m: m, r: r, src: src, rep: &metrics.Report{Factory: metrics.Factory{StageMs: map[string]float64{}}}}
+		x := &executor{m: m, r: r, src: src, rep: &metrics.Report{Factory: metrics.Factory{StageMs: map[string]float64{}, Sandbox: m.Sandbox()}}}
 		x.run(ctx)
 		_ = os.Remove(filepath.Join(r.Dir(), "fliessband.pid"))
 		_ = os.RemoveAll(filepath.Join(r.Dir(), "bin")) // binaries are large; the SBOM keeps their digest
@@ -488,6 +492,7 @@ type cmdOpts struct {
 	network bool     // allow module downloads
 	dir     string   // working directory; default the service directory
 	env     []string // extra environment
+	host    bool     // run on the host even if the command executes generated code
 	timeout time.Duration
 }
 
@@ -503,14 +508,8 @@ func (x *executor) command(ctx context.Context, st *StageState, o cmdOpts, name 
 	}
 	ctx, cancel := context.WithTimeout(ctx, o.timeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, path, args...)
-	cmd.Dir = x.r.ServiceDir()
-	if o.dir != "" {
-		cmd.Dir = o.dir
-	}
-	cmd.Env = x.m.childEnv(o.network, o.env...)
-	isolate(cmd)
-	x.log(st, "$ "+name+" "+strings.Join(args, " "))
+	cmd, shown := x.newCommand(ctx, o, path, name, args)
+	x.log(st, "$ "+shown)
 	stdout, _ := cmd.StdoutPipe()
 	stderr, _ := cmd.StderrPipe()
 	if err := cmd.Start(); err != nil {

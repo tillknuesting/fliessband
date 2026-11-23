@@ -44,7 +44,7 @@ func (x *executor) mutationFiles() []string {
 }
 
 func (x *executor) mutationRunner(covered func(string, int) bool, timeout time.Duration, st *StageState) *mutate.Runner {
-	return &mutate.Runner{
+	r := &mutate.Runner{
 		Root:    x.r.ServiceDir(),
 		Env:     x.m.childEnv(false),
 		Args:    x.skipArgs(),
@@ -59,6 +59,8 @@ func (x *executor) mutationRunner(covered func(string, int) bool, timeout time.D
 			}
 		},
 	}
+	x.sandboxMutations(r)
+	return r
 }
 
 // stageMutation measures how well the tests detect injected faults. When
@@ -379,7 +381,9 @@ func (x *executor) stageIntegration(ctx context.Context, st *StageState) error {
 	in := &metrics.Integration{Database: postgresImage, StartMs: float64(time.Since(t0).Milliseconds())}
 	x.rep.Integration = in
 	x.log(st, fmt.Sprintf("PostgreSQL ready after %.1fs", in.StartMs/1000))
-	res, err := x.command(ctx, st, cmdOpts{quiet: true, env: []string{"TEST_DATABASE_URL=" + db.url}},
+	// On the host even with a sandbox: the tests must reach the database, and
+	// the store package they build does not link the LLM's code.
+	res, err := x.command(ctx, st, cmdOpts{quiet: true, host: true, env: []string{"TEST_DATABASE_URL=" + db.url}},
 		"go", "test", "-race", "-count=1", "-json", "-covermode=atomic", "-coverprofile="+x.integrationCoverPath(),
 		"-run", "Postgres", "./internal/store/")
 	if err != nil {

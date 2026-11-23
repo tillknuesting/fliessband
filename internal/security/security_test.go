@@ -55,7 +55,7 @@ func TestAuditGeneratedService(t *testing.T) {
 		"k8s-nonroot": "pass", "k8s-rofs": "pass", "k8s-escalation": "pass", "k8s-caps": "pass",
 		"k8s-seccomp": "pass", "k8s-token": "pass", "k8s-limits": "pass",
 		"ci-permissions": "pass", "ci-pinned": "warn", "gosec": "pass", "secrets": "pass",
-		"policy": "pass", "govulncheck": "pass", "fuzz": "skip", "sbom": "warn",
+		"policy": "pass", "govulncheck": "pass", "fuzz": "skip", "sbom": "warn", "sandbox": "warn",
 	}
 	for id, st := range want {
 		c, ok := got[id]
@@ -104,4 +104,22 @@ func replaceOnce(s, old, new string) string {
 		}
 	}
 	return s
+}
+
+func TestAuditSandbox(t *testing.T) {
+	root, s := service(t)
+	for _, c := range []struct {
+		sb   *metrics.Sandbox
+		want string
+	}{
+		{nil, "warn"},
+		{&metrics.Sandbox{Mode: "none"}, "warn"},
+		{&metrics.Sandbox{Mode: "docker", Contained: true, Engine: "docker", Image: "golang:1.27.4", Runtime: "runsc", Network: "none"}, "pass"},
+	} {
+		rep := &metrics.Report{Factory: metrics.Factory{Sandbox: c.sb}}
+		got := status(Audit(root, s, rep, func(string) bool { return true }))["sandbox"]
+		if got.Status != c.want || got.Area != "Factory" {
+			t.Errorf("sandbox %+v: %+v, want %s", c.sb, got, c.want)
+		}
+	}
 }

@@ -39,6 +39,7 @@ func Audit(root string, s *spec.Spec, rep *metrics.Report, ran Ran) *metrics.Sec
 	a.code(rep)
 	a.dependencies(rep, ran)
 	a.supply(rep, ran)
+	a.execution(rep)
 	sec := &metrics.Security{Checks: a.out}
 	for _, c := range a.out {
 		switch c.Status {
@@ -379,6 +380,27 @@ func (a *audit) dependencies(rep *metrics.Report, ran Ran) {
 		fz.Status, fz.Detail = "pass", fmt.Sprintf("%d fuzz targets ran %d inputs through validation without a crash.", len(rep.Fuzz.Targets), rep.Fuzz.Execs)
 	}
 	a.add(fz)
+}
+
+// execution checks how the factory contained the generated code it ran:
+// tests, fuzzing, mutants and the built server.
+func (a *audit) execution(rep *metrics.Report) {
+	c := metrics.SecurityCheck{ID: "sandbox", Area: "Factory", Title: "Generated code ran in a sandbox"}
+	s := rep.Factory.Sandbox
+	switch {
+	case s == nil:
+		c.Status, c.Detail = "warn", "The run did not record how its code was executed."
+	case s.Contained:
+		c.Status = "pass"
+		c.Detail = fmt.Sprintf("Tests, fuzzing, mutants and the server ran in %s containers from %s with no network, a read-only root filesystem, all capabilities dropped, a non-root user and resource limits.", s.Engine, s.Image)
+		if s.Runtime != "" {
+			c.Detail += " OCI runtime: " + s.Runtime + "."
+		}
+	default:
+		c.Status = "warn"
+		c.Detail = "Tests, fuzzing, mutants and the server ran as ordinary processes on the factory host, protected only by a scrubbed environment, the import policy and timeouts. Set FLIESSBAND_SANDBOX=docker on shared factories."
+	}
+	a.add(c)
 }
 
 func (a *audit) supply(rep *metrics.Report, ran Ran) {

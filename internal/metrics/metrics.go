@@ -256,6 +256,19 @@ type Factory struct {
 	CostUSD        float64            `json:"cost_usd,omitempty"` // as reported by the provider
 	Tournament     *Tournament        `json:"tournament,omitempty"`
 	Review         *Review            `json:"review,omitempty"`
+	Sandbox        *Sandbox           `json:"sandbox,omitempty"`
+}
+
+// Sandbox records how the factory contained the generated code it executed
+// (tests, fuzzing, mutants, the built server).
+type Sandbox struct {
+	Mode      string `json:"mode"` // none or docker
+	Contained bool   `json:"contained"`
+	Engine    string `json:"engine,omitempty"`
+	Image     string `json:"image,omitempty"`
+	Runtime   string `json:"runtime,omitempty"` // OCI runtime, e.g. runsc (gVisor)
+	Network   string `json:"network,omitempty"` // network of the execution steps
+	Detail    string `json:"detail,omitempty"`
 }
 
 // PassCount is how many of a set of tests passed.

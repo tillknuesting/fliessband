@@ -6,12 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"net"
-	"os/exec"
 	"slices"
-	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"google.golang.org/grpc"
@@ -54,14 +51,9 @@ func (x *executor) stageSmoke(ctx context.Context, st *StageState) error {
 	// apart from the real startup time.
 	rt := &metrics.Runtime{}
 	x.rep.Runtime = rt
-	warm := exec.Command(x.binary())
-	warm.Env = x.m.childEnv(false, "LOG_LEVEL=not-a-level")
-	t0 := time.Now()
-	_ = warm.Run()
-	rt.FirstExecMs = float64(time.Since(t0).Microseconds()) / 1000
-	x.log(st, fmt.Sprintf("first exec (exits on purpose, warms OS binary checks): %.1f ms", rt.FirstExecMs))
 
-	// The binary contains LLM-written code: it gets the scrubbed environment.
+	// The binary contains LLM-written code: it gets the scrubbed environment,
+	// and the sandbox when one is configured.
 	env := []string{"GRPC_ADDR=" + addr, "LOG_LEVEL=warn", "SHUTDOWN_TIMEOUT=5s"}
 	storeKind := "memory"
 	if x.db != nil {
@@ -69,11 +61,17 @@ func (x *executor) stageSmoke(ctx context.Context, st *StageState) error {
 		storeKind = "postgres"
 	}
 	rt.Store = storeKind
-	cmd := exec.Command(x.binary())
-	cmd.Env = x.m.childEnv(false, env...)
+	srv, warm, err := x.smokeServer(ctx, st, env)
+	if err != nil {
+		return err
+	}
+	defer srv.cleanup()
+	rt.FirstExecMs = float64(warm.Microseconds()) / 1000
+	x.log(st, fmt.Sprintf("first exec (exits on purpose, warms OS binary checks): %.1f ms", rt.FirstExecMs))
+	cmd := srv.cmd
 	out, _ := cmd.StdoutPipe()
 	cmd.Stderr = cmd.Stdout
-	x.log(st, fmt.Sprintf("$ GRPC_ADDR=%s LOG_LEVEL=warn bin/server   (%s store)", addr, storeKind))
+	x.log(st, fmt.Sprintf("$ GRPC_ADDR=%s LOG_LEVEL=warn bin/server   (%s store, %s)", addr, storeKind, srv.where))
 	start := time.Now()
 	if err := cmd.Start(); err != nil {
 		return err
@@ -89,23 +87,32 @@ func (x *executor) stageSmoke(ctx context.Context, st *StageState) error {
 	stopped := false
 	defer func() {
 		if !stopped {
-			_ = cmd.Process.Kill()
+			srv.kill()
 			x.log(st, fmt.Sprintf("server stopped by the smoke station: %v", <-exited))
 		}
 	}()
 
-	conn, err := grpc.NewClient(addr,
+	opts := []grpc.DialOption{
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 		grpc.WithConnectParams(grpc.ConnectParams{
 			Backoff:           backoff.Config{BaseDelay: 5 * time.Millisecond, Multiplier: 1.5, Jitter: 0.1, MaxDelay: 100 * time.Millisecond},
 			MinConnectTimeout: time.Second,
-		}))
+		}),
+	}
+	dial := func(ctx context.Context, addr string) (net.Conn, error) {
+		return (&net.Dialer{Timeout: 100 * time.Millisecond}).DialContext(ctx, "tcp", addr)
+	}
+	if srv.dial != nil {
+		dial = srv.dial
+		opts = append(opts, grpc.WithContextDialer(srv.dial))
+	}
+	conn, err := grpc.NewClient(addr, opts...)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = conn.Close() }()
 
-	if err := waitReady(ctx, conn, addr, model.Health, exited); err != nil {
+	if err := waitReady(ctx, conn, addr, dial, model.Health, exited); err != nil {
 		return err
 	}
 	rt.StartupMs = float64(time.Since(start).Microseconds()) / 1000
@@ -147,15 +154,13 @@ func (x *executor) stageSmoke(ctx context.Context, st *StageState) error {
 	x.log(st, fmt.Sprintf("load %s: %d calls, %d workers, %.0f rps, p50 %.3f ms, p90 %.3f ms, p99 %.3f ms, %d errors",
 		method, loadCalls, loadConcurrency, rt.RPS, rt.P50Ms, rt.P90Ms, rt.P99Ms, errs))
 
-	if b, err := exec.Command("ps", "-o", "rss=", "-p", strconv.Itoa(cmd.Process.Pid)).Output(); err == nil {
-		if kb, err := strconv.ParseInt(strings.TrimSpace(string(b)), 10, 64); err == nil {
-			rt.RSSBytes = kb * 1024
-			x.log(st, fmt.Sprintf("resident memory after load: %.1f MB", float64(rt.RSSBytes)/(1<<20)))
-		}
+	if b, ok := srv.rss(); ok {
+		rt.RSSBytes = b
+		x.log(st, fmt.Sprintf("resident memory after load: %.1f MB", float64(rt.RSSBytes)/(1<<20)))
 	}
 
 	t := time.Now()
-	_ = cmd.Process.Signal(syscall.SIGTERM)
+	_ = srv.term()
 	select {
 	case err := <-exited:
 		stopped = true
@@ -180,7 +185,7 @@ func (x *executor) stageSmoke(ctx context.Context, st *StageState) error {
 
 // waitReady polls the TCP port (cheap, no client backoff), then the gRPC
 // health service until it reports SERVING.
-func waitReady(ctx context.Context, conn *grpc.ClientConn, addr string, health bool, exited chan error) error {
+func waitReady(ctx context.Context, conn *grpc.ClientConn, addr string, dial func(context.Context, string) (net.Conn, error), health bool, exited chan error) error {
 	deadline := time.Now().Add(10 * time.Second)
 	exitedEarly := func() error {
 		select {
@@ -195,7 +200,10 @@ func waitReady(ctx context.Context, conn *grpc.ClientConn, addr string, health b
 		if err := exitedEarly(); err != nil {
 			return err
 		}
-		if c, err := net.DialTimeout("tcp", addr, 100*time.Millisecond); err == nil {
+		dctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		c, err := dial(dctx, addr)
+		cancel()
+		if err == nil {
 			_ = c.Close()
 			break
 		}

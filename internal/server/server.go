@@ -325,7 +325,7 @@ func (a *api) status(w http.ResponseWriter, _ *http.Request) {
 	a.toolsOnce.Do(a.loadTools)
 	lines, active, queued := a.m.Capacity()
 	resp := map[string]any{"tools": a.tools, "llm": nil, "version": pipeline.Version, "auth": a.cfg.Token != "",
-		"capacity": map[string]int{"lines": lines, "active": active, "queued": queued}}
+		"capacity": map[string]int{"lines": lines, "active": active, "queued": queued}, "sandbox": a.m.Sandbox()}
 	if c := a.m.LLM(); c != nil {
 		resp["llm"] = map[string]any{"model": c.Model, "base_url": c.BaseURL, "models": c.Candidates(), "reviewer": c.Reviewer}
 	}

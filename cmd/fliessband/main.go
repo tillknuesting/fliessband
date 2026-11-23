@@ -68,6 +68,8 @@ environment:
   FLIESSBAND_TRUSTED_ORIGINS   comma-separated origins allowed to make writes (proxies)
   FLIESSBAND_LLM_BASE_URL, FLIESSBAND_LLM_API_KEY, FLIESSBAND_LLM_MODEL   the implement stage
   FLIESSBAND_TOOLS             directory with buf, golangci-lint, ... (default .tools/bin)
+  FLIESSBAND_SANDBOX           where generated code runs: none (default) or docker (also -sandbox)
+  FLIESSBAND_SANDBOX_IMAGE, FLIESSBAND_SANDBOX_RUNTIME, FLIESSBAND_SANDBOX_ENGINE   image, OCI runtime (runsc), docker or podman
 `)
 	os.Exit(2)
 }
@@ -94,6 +96,7 @@ func serveCmd(args []string) error {
 	parallel := fs.Int("parallel", 2, "runs executed at the same time")
 	queue := fs.Int("queue", 20, "runs that may wait for a free slot")
 	keep := fs.Int("keep", 200, "finished runs kept on disk")
+	sandboxMode := sandboxFlag(fs)
 	_ = fs.Parse(args)
 	log := slog.New(slog.NewJSONHandler(os.Stderr, nil))
 
@@ -113,6 +116,12 @@ func serveCmd(args []string) error {
 		return err
 	}
 	m.SetLimits(*parallel, *queue, *keep)
+	if err := setupSandbox(m, *sandboxMode); err != nil {
+		return err
+	}
+	if !m.Sandbox().Contained && !loopback {
+		log.Warn("serving beyond localhost without a sandbox: tests, fuzzing, mutants and built servers run as ordinary processes on this host; set FLIESSBAND_SANDBOX=docker")
+	}
 	var origins []string
 	for _, o := range strings.Split(os.Getenv("FLIESSBAND_TRUSTED_ORIGINS"), ",") {
 		if o = strings.TrimSpace(o); o != "" {
@@ -135,7 +144,7 @@ func serveCmd(args []string) error {
 		llmInfo = c.Model + " at " + c.BaseURL
 	}
 	log.Info("fliessband listening", "url", "http://"+*addr, "version", pipeline.Version, "llm", llmInfo, "auth", token != "",
-		"parallel", *parallel, "queue", *queue, "keep", *keep)
+		"parallel", *parallel, "queue", *queue, "keep", *keep, "sandbox", m.Sandbox().Detail)
 	select {
 	case err := <-errc:
 		return err
@@ -169,6 +178,7 @@ func runCmd(args []string) error {
 	fuzzTime := fs.String("fuzztime", "3s", "fuzzing time per target")
 	integration := fs.Bool("integration", true, "test the PostgreSQL store in Docker when available")
 	jsonOut := fs.Bool("json", false, "print the metrics report as JSON")
+	sandboxMode := sandboxFlag(fs)
 	_ = fs.Parse(args)
 	if fs.NArg() != 1 {
 		usage()
@@ -181,6 +191,10 @@ func runCmd(args []string) error {
 	if err != nil {
 		return err
 	}
+	if err := setupSandbox(m, *sandboxMode); err != nil {
+		return err
+	}
+	fmt.Println("sandbox:", m.Sandbox().Detail)
 	r, err := m.Start(src, pipeline.Options{LLM: *useLLM, Model: *model, Models: llm.SplitModels(*models), Reviewer: *reviewer, Smoke: *smoke, Vuln: *vuln, Mutation: *mutation,
 		MaxMutants: *maxMutants, Fuzz: *fuzz, FuzzTime: *fuzzTime, Integration: *integration})
 	if err != nil {
