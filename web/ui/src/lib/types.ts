@@ -70,7 +70,10 @@ export interface Report {
     review?: { model: string; findings: ReviewFinding[] | null; note?: string }
   }
   score: { total: number; grade: string; capped: boolean; parts: ScorePart[] }
+  security?: { checks: SecurityCheck[]; passed: number; warned: number; failed: number }
 }
+
+export interface SecurityCheck { id: string; area: string; title: string; status: 'pass' | 'warn' | 'fail' | 'skip'; detail: string; file?: string; line?: number }
 
 export interface Options {
   llm: boolean; model?: string; models?: string[]; reviewer?: string; smoke: boolean; vuln: boolean; mutation: boolean; fuzz: boolean; integration: boolean; base?: string
@@ -85,7 +88,7 @@ export interface Summary {
   id: string; name: string; created_at: string; status: Status; llm: boolean; score?: number; grade?: string
   coverage?: number; mean_cyclomatic?: number; mean_mi?: number; code_lines: number; tests: number; findings: number
   rpcs: number; implemented: number; duration_ms: number; p99_ms?: number; failed_at?: string
-  mutation_score?: number; examples: number; examples_passed: number; cost_usd?: number; base?: string; stages?: Brief[]
+  mutation_score?: number; examples: number; examples_passed: number; cost_usd?: number; base?: string; security?: [number, number, number]; stages?: Brief[]
 }
 
 export interface Brief { id: string; status: Status; ms: number; started_at?: string; summary?: string }

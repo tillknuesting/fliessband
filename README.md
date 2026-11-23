@@ -220,6 +220,18 @@ the line.
 With OpenRouter, every call's cost is recorded, per candidate and per run.
 The CLI takes `-models` and `-reviewer`, and the UI has fields for both.
 
+## The security audit
+
+The Measure station audits every generated service and the UI shows it in a
+Security tab. Each control is checked in the files the run produced, or in a
+station's result, and cites the file and line it read: TLS 1.3 and mTLS,
+reflection, request size and stream caps, load shedding, deadlines, bounded
+string inputs, request bodies kept out of logs, a distroless non-root image
+pinned by digest, Kubernetes pod hardening, a least-privilege CI token with
+actions pinned by commit, gosec, a secrets scan, the LLM policy, govulncheck,
+fuzzing, and the SBOM and provenance. Product comparisons list every control
+that changed between two versions.
+
 ## What a generated service gets
 
 - A PostgreSQL store (pgx, embedded migrations under an advisory lock, CHECK

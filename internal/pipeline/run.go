@@ -150,6 +150,7 @@ type Summary struct {
 	ExamplesOK  int        `json:"examples_passed"`
 	CostUSD     float64    `json:"cost_usd,omitempty"`
 	Base        string     `json:"base,omitempty"`
+	Security    *[3]int    `json:"security,omitempty"` // checks passed, warned, failed
 	Stages      []Brief    `json:"stages"`
 }
 
@@ -293,6 +294,9 @@ func (r *Run) Summary() Summary {
 			s.Examples, s.ExamplesOK = len(a.Examples), a.Passed
 		}
 		s.CostUSD = rep.Factory.CostUSD
+		if sec := rep.Security; sec != nil {
+			s.Security = &[3]int{sec.Passed, sec.Warned, sec.Failed}
+		}
 	}
 	return s
 }

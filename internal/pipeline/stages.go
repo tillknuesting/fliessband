@@ -19,6 +19,7 @@ import (
 	"github.com/tillknuesting/fliessband/internal/llm"
 	"github.com/tillknuesting/fliessband/internal/metrics"
 	"github.com/tillknuesting/fliessband/internal/policy"
+	"github.com/tillknuesting/fliessband/internal/security"
 	"github.com/tillknuesting/fliessband/internal/spec"
 )
 
@@ -703,7 +704,7 @@ func (x *executor) stageBuild(ctx context.Context, st *StageState) error {
 		x.fail("build", res.stderr)
 		return fmt.Errorf("compile errors: %s", firstLine(res.stderr))
 	}
-	res, err = x.command(ctx, st, cmdOpts{}, "go", "build", "-trimpath", "-o", x.binary(), "./cmd/server")
+	res, err = x.command(ctx, st, cmdOpts{}, "go", "build", "-trimpath", "-buildvcs=false", "-o", x.binary(), "./cmd/server")
 	if err != nil {
 		return err
 	}
@@ -1213,6 +1214,10 @@ func (x *executor) stageMeasure(_ context.Context, st *StageState, gates bool) e
 	api.RPCs = api.CRUD + api.Custom
 	api.Messages += 2 * api.RPCs
 	rep.API = api
+	rep.Security = security.Audit(root, x.spec, rep, func(id string) bool {
+		s := x.r.stage(id)
+		return s != nil && (s.Status == Passed || s.Status == Warning || s.Status == Failed)
+	})
 
 	comp := metrics.Completeness{Total: api.RPCs, Implemented: api.RPCs, Stubbed: x.stubs()}
 	comp.Implemented -= len(comp.Stubbed)

@@ -8,6 +8,7 @@ import { useTween } from '@/lib/tween'
 import { cn } from '@/lib/utils'
 import type { FactoryStatus, Run, Summary } from '@/lib/types'
 import { ago, StatusIcon } from './Shell'
+import { SEC } from './Security'
 
 const GRADE_COLOR: Record<string, string> = { A: 'var(--good)', B: 'var(--good)', C: 'var(--warn)', D: 'var(--destructive)', F: 'var(--destructive)' }
 const OWNED = ['internal/service/custom.go', 'internal/service/custom_test.go']
@@ -255,6 +256,7 @@ function Compare({ A, B, na, nb, ra, rb }: { A: Summary; B: Summary; na: number;
     { label: 'Tests', a: A.tests, b: B.tests, fmt: (v) => v.toFixed(0), digits: 0 },
     { label: 'Mean cyclomatic', a: A.mean_cyclomatic, b: B.mean_cyclomatic, fmt: (v) => v.toFixed(1), lower: true },
     { label: 'Findings', a: A.findings, b: B.findings, fmt: (v) => v.toFixed(0), digits: 0, lower: true },
+    { label: 'Security issues', a: A.security ? A.security[1] + A.security[2] : undefined, b: B.security ? B.security[1] + B.security[2] : undefined, fmt: (v) => v.toFixed(0), digits: 0, lower: true },
     { label: 'Line time', a: A.duration_ms / 1000, b: B.duration_ms / 1000, fmt: (v) => ms(v * 1000), digits: 0, lower: true, unit: ' s' },
   ]
   return (
@@ -266,9 +268,9 @@ function Compare({ A, B, na, nb, ra, rb }: { A: Summary; B: Summary; na: number;
         <VersionChip n={nb} r={B} />
         {B.base === A.id && <span className="rounded border border-signal/40 px-1.5 text-[11.5px] text-signal">improved from v{na}</span>}
       </div>
-      <div className="grid grid-cols-2 overflow-hidden rounded-lg border bg-card sm:grid-cols-4">
-        {metrics.map((m, i) => (
-          <div key={m.label} className={cn('px-4 py-3', i % 4 !== 0 && 'sm:border-l', i % 2 !== 0 && 'max-sm:border-l', i >= 4 && 'sm:border-t', i >= 2 && 'max-sm:border-t')}>
+      <div className="grid grid-cols-2 overflow-hidden rounded-lg border bg-card sm:grid-cols-3 xl:grid-cols-5">
+        {metrics.map((m) => (
+          <div key={m.label} className="-mt-px -ml-px border-t border-l px-4 py-3">
             <div className="text-[12px] text-muted-foreground">{m.label}</div>
             <div className="mt-0.5 flex items-baseline gap-2">
               <span className="text-[20px] font-semibold tabular-nums">{m.b != null ? <Rolling value={m.b} fmt={m.fmt} /> : '–'}</span>
@@ -279,6 +281,7 @@ function Compare({ A, B, na, nb, ra, rb }: { A: Summary; B: Summary; na: number;
         ))}
       </div>
       <Parts ra={ra} rb={rb} na={na} nb={nb} />
+      <SecurityChanges ra={ra} rb={rb} na={na} nb={nb} />
       <Diffs A={A} B={B} ra={ra} rb={rb} na={na} nb={nb} />
     </div>
   )
@@ -297,6 +300,53 @@ function VersionChip({ n, r, dashed }: { n: number; r: Summary; dashed?: boolean
       <span className="text-muted-foreground">{ago(r.created_at)}</span>
       {r.llm && <span className="text-[11px] text-muted-foreground">LLM</span>}
     </a>
+  )
+}
+
+const RANK = { fail: 0, warn: 1, pass: 2, skip: 3 } as const
+
+/** Controls whose status changed between the two versions, worst news first. */
+function SecurityChanges({ ra, rb, na, nb }: { ra?: Run; rb?: Run; na: number; nb: number }) {
+  const a = ra?.report?.security?.checks
+  const b = rb?.report?.security?.checks
+  if (!b) return null
+  const before = new Map((a ?? []).map((c) => [c.id, c]))
+  const moved = b
+    .map((c) => ({ c, was: before.get(c.id) }))
+    .filter(({ c, was }) => (was ? was.status !== c.status : !!a))
+    .sort((x, y) => RANK[x.c.status] - RANK[y.c.status])
+  return (
+    <section className="rounded-lg border bg-card">
+      <header className="flex items-baseline gap-2 border-b px-4 py-2.5">
+        <h2 className="text-[13px] font-semibold">Security changes</h2>
+        <span className="text-[12px] text-muted-foreground">
+          {!a ? `v${na} has no security audit; v${nb} has ${b.filter((c) => c.status === 'pass').length} controls passing` : moved.length ? `${moved.length} controls changed from v${na} to v${nb}` : `no control changed from v${na} to v${nb}`}
+        </span>
+      </header>
+      {moved.length > 0 && (
+        <ul className="divide-y">
+          {moved.map(({ c, was }) => {
+            const now = SEC[c.status]
+            const then = was ? SEC[was.status] : undefined
+            const better = was ? RANK[c.status] > RANK[was.status] : c.status === 'pass'
+            return (
+              <li key={c.id} className="grid grid-cols-[1fr_auto] items-center gap-3 px-4 py-2 text-[12.5px]">
+                <div className="min-w-0">
+                  <span className="font-medium">{c.title}</span> <span className="text-muted-foreground">({c.area})</span>
+                  <p className="truncate text-muted-foreground">{c.detail}</p>
+                </div>
+                <span className="flex items-center gap-1.5 whitespace-nowrap">
+                  {then ? <span className={then.text}>{then.word}</span> : <span className="text-muted-foreground">new</span>}
+                  <ArrowRight className="size-3 text-muted-foreground" />
+                  <span className={cn('font-medium', now.text)}>{now.word}</span>
+                  {better ? <ArrowUp className="size-3 text-good" /> : <ArrowDown className="size-3 text-destructive" />}
+                </span>
+              </li>
+            )
+          })}
+        </ul>
+      )}
+    </section>
   )
 }
 

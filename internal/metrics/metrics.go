@@ -42,6 +42,7 @@ type Report struct {
 	Contract     *Contract    `json:"contract,omitempty"`
 	Integration  *Integration `json:"integration,omitempty"`
 	Supply       *Supply      `json:"supply,omitempty"`
+	Security     *Security    `json:"security,omitempty"`
 	Factory      Factory      `json:"factory"`
 	Score        Score        `json:"score"`
 }
@@ -762,4 +763,24 @@ func ParseGoMod(path string) (direct, indirect int, goVersion string) {
 		}
 	}
 	return direct, indirect, goVersion
+}
+
+// Security is the audit of the generated service: each check reads the files
+// the line produced, or a station's result, and cites where it looked.
+type Security struct {
+	Checks []SecurityCheck `json:"checks"`
+	Passed int             `json:"passed"`
+	Warned int             `json:"warned"`
+	Failed int             `json:"failed"`
+}
+
+// SecurityCheck is one control: pass, warn, fail, or skip when it does not apply.
+type SecurityCheck struct {
+	ID     string `json:"id"`
+	Area   string `json:"area"`
+	Title  string `json:"title"`
+	Status string `json:"status"`
+	Detail string `json:"detail"`
+	File   string `json:"file,omitempty"`
+	Line   int    `json:"line,omitempty"`
 }

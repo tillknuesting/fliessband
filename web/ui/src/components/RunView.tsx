@@ -11,6 +11,7 @@ import type { Run, Stage, Summary, Validation } from '@/lib/types'
 import { startRerun, versionsOf } from './Product'
 import { Conveyor, StationDetail, remaining } from './Conveyor'
 import { Blueprint } from './Blueprint'
+import { Security } from './Security'
 import { Measurements } from './Measurements'
 import { CodeView, ContractView, LogView } from './Views'
 import { ErrorBoundary } from './ErrorBoundary'
@@ -162,6 +163,12 @@ export function RunView({ run, error, validation, runs = [] }: { run: Run | null
         <Tabs value={tab} onValueChange={setTab}>
           <TabsList>
             <TabsTrigger value="service">Service</TabsTrigger>
+            <TabsTrigger value="security" className="gap-1.5">
+              Security
+              {run?.report?.security && (run.report.security.failed > 0 || run.report.security.warned > 0) && (
+                <span className={cn('size-1.5 rounded-full', run.report.security.failed ? 'bg-destructive' : 'bg-warn')} aria-label={run.report.security.failed ? 'failing controls' : 'warnings'} />
+              )}
+            </TabsTrigger>
             <TabsTrigger value="measure">Measurements</TabsTrigger>
             <TabsTrigger value="code">Code</TabsTrigger>
             <TabsTrigger value="log">Log</TabsTrigger>
@@ -170,6 +177,11 @@ export function RunView({ run, error, validation, runs = [] }: { run: Run | null
           <TabsContent value="service" className="pt-2">
             <ErrorBoundary label="service blueprint">
               <Blueprint run={run} validation={validation} open={openFile} />
+            </ErrorBoundary>
+          </TabsContent>
+          <TabsContent value="security" className="pt-2">
+            <ErrorBoundary label="security audit">
+              <Security run={run} open={openFile} />
             </ErrorBoundary>
           </TabsContent>
           <TabsContent value="measure" className="pt-2">
