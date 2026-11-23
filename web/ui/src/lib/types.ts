@@ -67,9 +67,11 @@ export interface Report {
     hardening?: { survivors: number; killed: number; equivalent: number; kept: boolean; note?: string }
     cost_usd?: number
     tournament?: Tournament
-    review?: { model: string; findings: ReviewFinding[] | null; note?: string }
+    sandbox?: { mode: string; contained: boolean; engine?: string; image?: string; runtime?: string; network?: string; detail?: string }
+    review?: { model: string; findings: ReviewFinding[] | null; note?: string; fix_attempted?: boolean; fix_kept?: boolean; fix_model?: string; fixed_findings?: number; fix_note?: string }
   }
   score: { total: number; grade: string; capped: boolean; parts: ScorePart[] }
+  migrations?: { baseline?: string; files: string[]; generated?: string; changes: { kind: string; table: string; column?: string; detail: string; destructive: boolean }[] | null; blocked?: boolean; allowed?: boolean; note?: string }
   security?: { checks: SecurityCheck[]; passed: number; warned: number; failed: number }
 }
 
@@ -109,6 +111,7 @@ export interface Tool { name: string; version: string; found: boolean }
 export interface FactoryStatus {
   tools: Tool[]; llm: { model: string; base_url: string; models: string[]; reviewer: string } | null; version: string; auth: boolean
   capacity?: { lines: number; active: number; queued: number }
+  sandbox?: { mode: string; contained: boolean; engine?: string; runtime?: string; detail?: string }
 }
 export interface Example { name: string; file: string; source: string }
 export interface FileEntry { path: string; bytes: number; origin: string }
@@ -119,5 +122,5 @@ export interface Candidate {
   own: PassCount; visible: PassCount; foreign: PassCount; cross?: Record<string, PassCount> | null; failed_tests?: string[] | null
   score: number; tokens_in: number; tokens_out: number; cost_usd?: number; ms: number; chosen: boolean
 }
-export interface Tournament { winner: string; candidates: Candidate[] }
+export interface Tournament { winner: string; candidates: Candidate[]; merged_tests?: number; merged_from?: Record<string, number>; merged?: string[]; merge_note?: string }
 export interface ReviewFinding { file: string; line: number; severity: 'bug' | 'risk' | 'nit'; message: string }

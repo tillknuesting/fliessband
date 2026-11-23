@@ -736,11 +736,62 @@ function Tournament({ rep }: { rep: Report }) {
         </TableBody>
       </Table>
       <p className="mt-3 text-xs text-muted-foreground">Selection weighs visible examples 50%, other models' tests 35% and the model's own tests 15%.</p>
+      {(t.merged_tests ?? 0) > 0 ? (
+        <p className="mt-2 text-xs">
+          <b className="text-good">{t.merged_tests} tests merged</b> from losing models into the winner's test file, because they pass on its code:{' '}
+          <span className="font-mono text-muted-foreground">{t.merged?.join(', ')}</span>
+        </p>
+      ) : (
+        t.merge_note && <p className="mt-2 text-xs text-muted-foreground">{t.merge_note}</p>
+      )}
     </Section>
   )
 }
 
 const SEVERITY: Record<string, string> = { bug: 'bg-destructive text-white', risk: 'bg-warn text-foreground', nit: 'bg-muted text-muted-foreground' }
+
+function Migrations({ rep, open }: { rep: Report; open: Open }) {
+  const m = rep.migrations
+  if (!m) return null
+  const changes = m.changes ?? []
+  return (
+    <Section
+      title="Schema migrations"
+      description={m.baseline ? `The database schema compared with ${m.baseline}, the version this one follows. Earlier migration files are carried forward unchanged; changes to the spec become the next file.` : 'First version: 0001_init.sql creates the schema.'}
+    >
+      <ol className="mb-3 flex flex-wrap items-center gap-1.5 font-mono text-[11.5px]">
+        {m.files.map((f, i) => (
+          <li key={f} className="flex items-center gap-1.5">
+            {i > 0 && <span className="text-muted-foreground">→</span>}
+            <button onClick={() => open(`internal/store/migrations/${f}`)} className={cn('rounded border px-1.5 py-0.5 hover:bg-accent', f === m.generated ? 'border-signal/60 text-foreground' : 'text-muted-foreground')}>
+              {f}
+            </button>
+          </li>
+        ))}
+      </ol>
+      {m.blocked && <p className="mb-2 text-xs font-medium text-destructive">The line stopped: destructive changes need renamed_from or migrations.allow_destructive in the spec.</p>}
+      {m.allowed && <p className="mb-2 text-xs text-warn">Destructive changes allowed by the spec for this version.</p>}
+      {changes.length === 0 ? (
+        <p className="text-sm text-muted-foreground">No schema change.</p>
+      ) : (
+        <ul className="space-y-1 text-sm">
+          {changes.map((c, i) => (
+            <li key={i} className="flex items-start gap-2">
+              <Badge className={cn('mt-0.5 h-4 shrink-0 px-1.5 text-[10.5px]', c.destructive ? 'bg-destructive text-white' : 'bg-good/20 text-foreground')}>{c.destructive ? 'risky' : 'safe'}</Badge>
+              <span>
+                <span className="font-mono text-xs">
+                  {c.table}
+                  {c.column ? `.${c.column}` : ''}
+                </span>{' '}
+                <span className="text-muted-foreground">{c.detail}</span>
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </Section>
+  )
+}
 
 function Review({ rep, open }: { rep: Report; open: Open }) {
   const r = rep.factory.review
@@ -749,6 +800,13 @@ function Review({ rep, open }: { rep: Report; open: Open }) {
   return (
     <Section title="Second-model review" description={`${r.model} reviewed the LLM-written code against the method docs. It reports; it never stops the line.`}>
       {r.note && <p className="mb-3 text-xs text-muted-foreground">{r.note}</p>}
+      {r.fix_attempted && (
+        <p className={cn('mb-3 rounded-md border px-2.5 py-1.5 text-xs', r.fix_kept ? 'border-good/40 bg-good/10' : 'border-warn/40 bg-warn/10')}>
+          {r.fix_kept
+            ? `Fixed: ${r.fix_model} repaired ${r.fixed_findings ?? 0} reported bug${r.fixed_findings === 1 ? '' : 's'} and every gate still passed, so the fix was kept.`
+            : `A fix by ${r.fix_model} was tried and reverted: ${r.fix_note ?? 'a gate failed'}.`}
+        </p>
+      )}
       {items.length === 0 ? (
         <p className="flex items-center gap-1.5 text-sm text-good">
           <CircleCheck className="size-4" /> No defects reported.
@@ -855,6 +913,7 @@ export function Measurements({ run, open }: { run: Run; open: Open }) {
         <Robustness rep={rep} />
         <Supply rep={rep} run={run} />
       </div>
+      <Migrations rep={rep} open={open} />
       <Functions rep={rep} open={open} />
       <div className="grid gap-4 xl:grid-cols-2">
         <Findings rep={rep} />

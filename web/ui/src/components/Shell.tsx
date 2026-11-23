@@ -211,6 +211,19 @@ export function Sidebar(props: {
             )}
           </TooltipContent>
         </Tooltip>
+        {status?.sandbox && (
+          <Tooltip>
+            <TooltipTrigger className="flex w-full items-center gap-2">
+              <span className={cn('size-1.5 rounded-full', status.sandbox.contained ? 'bg-good' : 'bg-warn')} />
+              {status.sandbox.contained ? `Sandbox: ${status.sandbox.engine ?? status.sandbox.mode}${status.sandbox.runtime ? ` + ${status.sandbox.runtime}` : ''}` : 'No sandbox'}
+            </TooltipTrigger>
+            <TooltipContent side="right" className="max-w-72">
+              {status.sandbox.contained
+                ? 'Generated code runs in containers with no network, a read-only filesystem and no capabilities.'
+                : 'Generated code runs as ordinary processes on this machine. Start fliessband with -sandbox docker on a shared factory.'}
+            </TooltipContent>
+          </Tooltip>
+        )}
         <button onClick={onTheme} className="flex items-center gap-2 hover:text-foreground">
           {dark ? <Sun className="size-3.5" /> : <Moon className="size-3.5" />}
           {dark ? 'Light theme' : 'Dark theme'}
