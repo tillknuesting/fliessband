@@ -142,3 +142,16 @@ func (m *Manager) cachedTools() []Tool {
 	}
 	return m.tools
 }
+
+// DockerEnv is the environment of the factory's Docker client: its engine,
+// and a client configuration with no registry logins.
+func (m *Manager) DockerEnv() ([]string, error) {
+	d := m.docker()
+	if !d.ok {
+		return nil, errors.New(d.reason)
+	}
+	return m.dockerCmd(context.Background(), d).Env, nil
+}
+
+// DataDir is where the factory keeps runs and its other state.
+func (m *Manager) DataDir() string { return m.dataDir }

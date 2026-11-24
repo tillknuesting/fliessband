@@ -4,6 +4,7 @@
 //	fliessband run SPEC.yaml    run a spec through the line in the terminal
 //	fliessband gen -o DIR SPEC  only render the templates
 //	fliessband bench            benchmark the factory on the example specs
+//	fliessband deploy RUN       ship a passed run to a Kubernetes cluster
 package main
 
 import (
@@ -22,6 +23,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/tillknuesting/fliessband/internal/deploy"
 	"github.com/tillknuesting/fliessband/internal/gen"
 	"github.com/tillknuesting/fliessband/internal/llm"
 	"github.com/tillknuesting/fliessband/internal/pipeline"
@@ -43,6 +45,8 @@ func main() {
 		err = genCmd(os.Args[2:])
 	case "bench":
 		err = benchCmd(os.Args[2:])
+	case "deploy":
+		err = deployCmd(os.Args[2:])
 	case "version":
 		fmt.Println("fliessband", pipeline.Version)
 	default:
@@ -61,6 +65,8 @@ func usage() {
   fliessband gen -o DIR SPEC.yaml                        only render the templates
   fliessband bench [-specs GLOB] [-models a,b] [-repeat N] [-baseline FILE]
                                                          benchmark the factory itself
+  fliessband deploy [-target NAME] RUN-ID                 ship a passed run to Kubernetes
+  fliessband deploy -list | -remove SERVICE [-target NAME]
   fliessband version
 
 environment:
@@ -70,6 +76,8 @@ environment:
   FLIESSBAND_TOOLS             directory with buf, golangci-lint, ... (default .tools/bin)
   FLIESSBAND_SANDBOX           where generated code runs: none (default) or docker (also -sandbox)
   FLIESSBAND_SANDBOX_IMAGE, FLIESSBAND_SANDBOX_RUNTIME, FLIESSBAND_SANDBOX_ENGINE   image, OCI runtime (runsc), docker or podman
+  FLIESSBAND_DEPLOY_TARGETS    clusters to deploy to: name=context[/namespace][@registry],... (default: local clusters)
+  FLIESSBAND_DEPLOY            off turns deployment off in the UI
 `)
 	os.Exit(2)
 }
@@ -128,7 +136,19 @@ func serveCmd(args []string) error {
 			origins = append(origins, o)
 		}
 	}
-	h, err := server.New(m, server.Config{SpecsDir: "specs", Token: token, LoopbackOnly: loopback, TrustedOrigins: origins, Log: log})
+	var dep *deploy.Deployer
+	if os.Getenv("FLIESSBAND_DEPLOY") != "off" {
+		if dep, err = setupDeployer(m); err != nil {
+			return err
+		}
+		defer dep.Close()
+		names := []string{}
+		for _, t := range dep.Targets() {
+			names = append(names, t.Name+"="+t.Context+"/"+t.Namespace)
+		}
+		log.Info("deploy targets", "targets", names)
+	}
+	h, err := server.New(m, server.Config{SpecsDir: "specs", Token: token, LoopbackOnly: loopback, TrustedOrigins: origins, Log: log, Deployer: dep})
 	if err != nil {
 		return err
 	}

@@ -245,3 +245,39 @@ kbd.key {
 
 /* Data meters use the chart colour, not the near-black primary. */
 [data-slot="progress-indicator"] { background-color: var(--chart-1); }
+
+/* Deployments: replicas as capsules, and the puck riding a deployment's steps. */
+.pod {
+  display: inline-block;
+  width: 10px;
+  height: 14px;
+  border-radius: 4px;
+  transition: background-color 0.5s ease, box-shadow 0.5s ease, border-color 0.5s ease;
+}
+.pod-ready {
+  background: var(--signal);
+  box-shadow: 0 0 8px -2px color-mix(in oklch, var(--signal) 70%, transparent);
+}
+.pod-wait {
+  border: 1.5px solid color-mix(in oklch, var(--signal) 70%, transparent);
+  animation: pod-breathe 1.6s ease-in-out infinite;
+}
+@keyframes pod-breathe {
+  0%, 100% { opacity: 0.35; }
+  50% { opacity: 1; }
+}
+.deploy-puck {
+  position: absolute;
+  top: -4px;
+  width: 9px;
+  height: 9px;
+  margin-left: -4.5px;
+  border-radius: 999px;
+  background: var(--signal);
+  box-shadow: 0 0 0 3px color-mix(in oklch, var(--signal) 22%, transparent), 0 0 14px 1px color-mix(in oklch, var(--signal) 55%, transparent);
+  transition: left 0.7s cubic-bezier(0.22, 1, 0.36, 1);
+}
+@media (prefers-reduced-motion: reduce) {
+  .pod-wait { animation: none; opacity: 0.7; }
+  .deploy-puck { transition: none; }
+}

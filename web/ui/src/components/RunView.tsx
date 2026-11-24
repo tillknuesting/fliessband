@@ -15,6 +15,8 @@ import { Security } from './Security'
 import { Measurements } from './Measurements'
 import { CodeView, ContractView, LogView } from './Views'
 import { ErrorBoundary } from './ErrorBoundary'
+import { DeployButton, DeployProgress, liveTargets } from './Deploy'
+import { useDeployState } from '@/lib/deploy'
 
 const PILL = {
   running: { word: 'Running', icon: LoaderCircle, cls: 'bg-signal/15 text-signal border-signal/30', spin: true },
@@ -60,6 +62,11 @@ export function RunView({ run, error, validation, runs = [] }: { run: Run | null
       setRerunning(null)
     }
   }
+  const deploy = useDeployState(!!run && run.status === 'passed')
+  const [deployId, setDeployId] = useState<string | null>(null)
+  const runningDeploy = run ? deploy?.deployments.find((d) => d.run === run.id && d.status === 'running') : undefined
+  const showDeploy = deployId ?? runningDeploy?.id ?? null
+  const live = run ? liveTargets(deploy, run) : []
   const [tab, setTab] = useState('service')
   const [selected, setSelected] = useState<string | undefined>()
   const [open, setOpen] = useState<{ path: string; line?: number } | null>(null)
@@ -93,6 +100,11 @@ export function RunView({ run, error, validation, runs = [] }: { run: Run | null
                   {baseN > 0 && <span className="text-signal">, improved from v{baseN}</span>}
                 </a>
               )}
+              {live.map((t) => (
+                <a key={t.name} href="#/deploy" className="flex items-center gap-1.5 rounded-md border border-good/40 bg-good/10 px-1.5 py-0.5 text-[12px] text-good" title={`Serving on ${t.context}/${t.namespace}`}>
+                  <span className="size-1.5 rounded-full bg-good" /> Live on {t.name}
+                </a>
+              ))}
               {pill && (
                 <Badge variant="outline" className={cn('gap-1', pill.cls)}>
                   <pill.icon className={cn('size-3.5', pill.spin && 'animate-spin')} />
@@ -132,6 +144,7 @@ export function RunView({ run, error, validation, runs = [] }: { run: Run | null
                     <Button size="sm" disabled={!!rerunning} onClick={() => rerun(true)} className="bg-signal text-signal-foreground hover:bg-signal/85" title="Start the next version from this one and fix what it measured">
                       <Sparkles /> Improve
                     </Button>
+                    <DeployButton run={run} state={deploy} onStarted={setDeployId} />
                     <Button variant="outline" size="sm" asChild>
                       <a href={`/api/runs/${id}/zip`}>
                         <Download /> Download .zip
@@ -158,6 +171,7 @@ export function RunView({ run, error, validation, runs = [] }: { run: Run | null
             </>
           )}
         </div>
+        {showDeploy && <DeployProgress key={showDeploy} id={showDeploy} version={vn || undefined} onClose={() => setDeployId(null)} />}
         <Conveyor stages={stages} running={run?.status === 'running'} runStatus={run?.status} grade={run?.report?.score.grade} selected={current?.id} onSelect={setSelected} />
         <StationDetail stage={current} />
         <Tabs value={tab} onValueChange={setTab}>

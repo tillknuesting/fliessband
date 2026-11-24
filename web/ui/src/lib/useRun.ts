@@ -67,14 +67,15 @@ export function useRun(id: string | null, onFinished: () => void) {
   return { run, error }
 }
 
-export type Route = { view: 'line' | 'history' | 'floor' | 'product'; runId: string | null; product?: string }
+export type Route = { view: 'line' | 'history' | 'floor' | 'product' | 'deploy'; runId: string | null; product?: string }
 
-/** Reads the route from the location hash: #/run/<id>, #/history, #/floor or #/product/<name>. */
+/** Reads the route from the location hash: #/run/<id>, #/history, #/floor, #/deploy or #/product/<name>. */
 export function useHashRoute() {
   const read = (): Route => {
     const h = location.hash
     if (h.startsWith('#/history')) return { view: 'history', runId: null }
     if (h.startsWith('#/floor')) return { view: 'floor', runId: null }
+    if (h.startsWith('#/deploy')) return { view: 'deploy', runId: null }
     const p = h.match(/^#\/product\/(.+)$/)
     if (p) return { view: 'product', runId: null, product: decodeURIComponent(p[1]) }
     const m = h.match(/^#\/run\/(.+)$/)

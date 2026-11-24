@@ -60,7 +60,7 @@ make tools   # pinned buf, protoc plugins, golangci-lint, staticcheck, govulnche
 make serve   # UI on http://127.0.0.1:7070
 ```
 
-Pick an example spec in the UI and press **Run the line**. The UI is keyboard-first: ⌘K opens the command menu, ⌘↵ runs the line, `[` hides the spec, and `G` then `H` or `L` switches between history and the line. Or from the terminal:
+Pick an example spec in the UI and press **Run the line**. The UI is keyboard-first: ⌘K opens the command menu, ⌘↵ runs the line, `[` hides the spec, and `G` then `F`, `L`, `H` or `D` switches between the floor, the line, history and deployments. Or from the terminal:
 
 ```bash
 make run SPEC=specs/inventory.yaml
@@ -365,6 +365,44 @@ that changed between two versions.
 - Kubernetes manifests, a GitHub Actions workflow, a distroless non-root
   Dockerfile and a golangci-lint config.
 - Configuration by environment variable, listed in the service's own README.
+
+## Deploy to Kubernetes
+
+A run that passed every gate can go to a cluster: press **Deploy** on the run,
+or run `fliessband deploy RUN-ID`. Each deployment takes seven steps, shown
+live in the UI:
+
+| Step | What happens |
+|---|---|
+| Preflight | the cluster answers, the tools are there, the run has a Dockerfile and manifests |
+| Image | `docker build` of the run's service, tagged `fliessband/<service>:<run id>`; skipped when that image exists |
+| Load | the image reaches the nodes: `k3d image import` (checked on every node), `kind load`, `minikube image load`, nothing for Docker Desktop, OrbStack, Colima and Rancher Desktop, or `docker push` to a registry |
+| Database | on a local cluster, a throwaway PostgreSQL for services that use one, with a generated password in a Secret; its data is lost with its pod |
+| Apply | the run's `deploy/k8s` manifests through a kustomize overlay that sets the namespace, the image and labels; the namespace is created with the restricted Pod Security Standard enforced |
+| Rollout | waits until every replica runs the new version. A pod in `CrashLoopBackOff`, a failing image pull or a bad config stops the wait early; the factory then shows the pods' state, events and logs, and applies the previous version's manifests again |
+| Verify | a gRPC health check against the cluster Service through a port-forward |
+
+The **Deployments** page (`G` then `D`) shows each cluster, every service on it
+with one capsule per replica, rollback to the version that was live before, and
+removal. Deployments started from the terminal show up there as well.
+
+The factory deploys code that an LLM helped write, so it only deploys where it
+is told to. Local development clusters in your kubeconfig are found on their own
+(context names `k3d-*`, `kind-*`, `minikube`, `docker-desktop`, `orbstack`,
+`colima`, `rancher-desktop`); every other cluster must be named, with a registry
+its nodes pull from:
+
+```bash
+make cluster                             # a local k3d cluster, found automatically
+fliessband deploy -list                  # targets and what runs on them
+fliessband deploy 20261124-005259-956e   # build, load, apply, roll out, verify
+FLIESSBAND_DEPLOY_TARGETS='staging=gke_acme_eu/shop@ghcr.io/acme' make serve
+```
+
+On a remote cluster a service that uses PostgreSQL needs a Secret
+`<service>-db` with key `url`; the factory never runs a database there. Images
+are pushed with your own Docker login; the factory's other Docker calls use
+an empty client configuration. `FLIESSBAND_DEPLOY=off` turns deployment off.
 
 ## Benchmark
 

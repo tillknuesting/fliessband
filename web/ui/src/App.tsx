@@ -5,6 +5,7 @@ import { PanelLeft, Search } from 'lucide-react'
 import { History } from '@/components/History'
 import { Floor } from '@/components/Floor'
 import { Product } from '@/components/Product'
+import { Deployments } from '@/components/Deploy'
 import { RunView } from '@/components/RunView'
 import { SignIn } from '@/components/SignIn'
 import { SpecPanel } from '@/components/SpecPanel'
@@ -41,8 +42,8 @@ export default function App() {
       if (e.metaKey || e.ctrlKey || e.altKey || t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName)) return
       if (e.key === '[') toggleSpec()
       else if (e.key === 'g') g = Date.now()
-      else if (Date.now() - g < 800 && (e.key === 'h' || e.key === 'l' || e.key === 'f')) {
-        location.hash = { h: '#/history', l: '#/', f: '#/floor' }[e.key]
+      else if (Date.now() - g < 800 && (e.key === 'h' || e.key === 'l' || e.key === 'f' || e.key === 'd')) {
+        location.hash = { h: '#/history', l: '#/', f: '#/floor', d: '#/deploy' }[e.key]
         g = 0
       }
     }
@@ -136,8 +137,8 @@ export default function App() {
               </button>
             )}
             <nav aria-label="Breadcrumb" className="flex min-w-0 items-center gap-1.5 text-muted-foreground">
-              <a href={{ history: '#/history', floor: '#/floor', line: '#/', product: '#/floor' }[route.view]} className="hover:text-foreground">
-                {{ history: 'History', floor: 'Floor', line: 'Line', product: 'Products' }[route.view]}
+              <a href={{ history: '#/history', floor: '#/floor', line: '#/', product: '#/floor', deploy: '#/deploy' }[route.view]} className="hover:text-foreground">
+                {{ history: 'History', floor: 'Floor', line: 'Line', product: 'Products', deploy: 'Deployments' }[route.view]}
               </a>
               {route.view === 'product' && (
                 <>
@@ -167,7 +168,9 @@ export default function App() {
             </button>
           </header>
           <main className="min-h-0 flex-1 overflow-y-auto [view-transition-name:main]">
-            {route.view === 'product' ? (
+            {route.view === 'deploy' ? (
+              <Deployments runs={history} />
+            ) : route.view === 'product' ? (
               <Product name={route.product!} runs={history} status={status} />
             ) : route.view === 'floor' ? (
               <Floor runs={history} status={status} examples={examples} onRuns={setHistory} onStatus={setStatus} />

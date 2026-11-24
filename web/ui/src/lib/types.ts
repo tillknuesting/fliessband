@@ -124,3 +124,33 @@ export interface Candidate {
 }
 export interface Tournament { winner: string; candidates: Candidate[]; merged_tests?: number; merged_from?: Record<string, number>; merged?: string[]; merge_note?: string }
 export interface ReviewFinding { file: string; line: number; severity: 'bug' | 'risk' | 'nit'; message: string }
+
+// Deployment to Kubernetes (internal/deploy).
+
+export type DeployStatus = 'running' | 'live' | 'failed' | 'rolled_back' | 'replaced' | 'removed'
+
+export interface DeployTarget {
+  name: string; context: string; namespace: string
+  strategy: 'k3d' | 'kind' | 'minikube' | 'shared' | 'registry'
+  cluster?: string; registry?: string; local: boolean
+}
+
+export interface Workload { service: string; run: string; image: string; ready: number; desired: number; updated: number; database: boolean }
+
+export interface TargetState extends DeployTarget {
+  reachable: boolean; error?: string; server?: string; workloads: Workload[]; checked_at: string
+}
+
+export interface DeploySummary {
+  id: string; action: 'deploy' | 'remove'; target: string; service: string; run: string; status: DeployStatus
+  created_at: string; finished_at?: string; previous?: string; error?: string; step?: string
+}
+
+export interface DeployStep { id: string; name: string; status: 'pending' | 'running' | 'passed' | 'failed' | 'skipped'; summary?: string; duration_ms: number }
+
+export interface Deployment extends DeploySummary {
+  context: string; namespace: string; image?: string; health?: string; replicas?: string
+  steps: DeployStep[]; log: string[]; manifests?: string
+}
+
+export interface DeployState { enabled: boolean; targets: TargetState[]; deployments: DeploySummary[] }

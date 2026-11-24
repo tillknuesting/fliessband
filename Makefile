@@ -1,4 +1,4 @@
-.PHONY: tools ui build test test-short lint serve run bench bench-baseline docker clean
+.PHONY: tools ui build test test-short lint serve run bench bench-baseline cluster docker clean
 
 TOOLS := $(CURDIR)/.tools/bin
 
@@ -46,6 +46,9 @@ bench: build ## benchmark the factory (template-only, all example specs) against
 
 bench-baseline: build ## rerun the template-only benchmark and make it the new baseline
 	./.tools/fliessband bench -specs 'specs/*.yaml' -out bench/baseline.json
+
+cluster: ## a local k3d cluster that fliessband deploys to (needs k3d and Docker)
+	k3d cluster create fliessband --agents 1 --k3s-arg "--disable=traefik@server:0" --wait
 
 docker:
 	docker build -t fliessband:dev .

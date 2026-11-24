@@ -306,6 +306,25 @@ the binary and every generated file. It also records the spec digest, the
 templates digest, the tool versions, and the digest of every LLM prompt. It is
 unsigned; sign it in a release pipeline (Sigstore cosign, for example).
 
+**Deployment (`internal/deploy`).** Shipping is an action on a passed run,
+not a station: the line decides whether a version is good, and deploying it is
+a choice someone makes. A deployment builds the run's image (tagged with the
+run id, so a rebuild is a cache hit and every version stays addressable),
+gets it onto the nodes, applies the run's own manifests through a kustomize
+overlay, and waits for the rollout itself instead of `kubectl rollout status`,
+so it can tell a crash loop or a failed pull from slowness and stop early.
+Rollback applies the manifests the previous version was deployed with, which
+each deployment keeps; `kubectl rollout undo` would leave the
+last-applied-configuration annotation stale for the next apply. Labels go on
+objects and pod templates but never into selectors, which are immutable; the
+run label stays off the database's pod template, which would otherwise restart
+with each version and lose its data. The factory only deploys to clusters it
+was told about or that are local development clusters by context name, and it
+never stores registry or cluster credentials: kubectl uses the user's
+kubeconfig, and pushes use the user's Docker login. Records live in
+`data/deploys/<id>` with the process id that runs them, so the UI sees
+deployments started from the terminal and marks those whose process died.
+
 ## 7. Measurements and the score
 
 | Group | Metrics |
@@ -347,7 +366,10 @@ here, because they are the one signal a prompt change cannot tune towards.
   idempotent creates.
 - A per-run build cache (or a read-only shared one) for the sandbox, and
   removal of containers left behind by a killed factory.
-- Signed provenance and SBOMs; image builds in the line.
+- Signed provenance and SBOMs, and signed images (the deploy action builds
+  and pushes them unsigned).
+- Deployment: progressive delivery (canaries with analysis), a database
+  migration step before a remote rollout, and pruning old images from nodes.
 - Upgrade tests with data: the integration station applies the migration
   chain to an empty database, not to one filled by the previous version,
   so a destructive `USING` cast that fails on real rows is not caught there.

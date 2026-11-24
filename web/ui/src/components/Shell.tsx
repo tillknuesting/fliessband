@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { ArrowDownRight, ArrowUpRight, Ban, Boxes, CircleCheck, CircleX, Factory, History as HistoryIcon, LoaderCircle, Moon, Play, Search, Sun, Workflow } from 'lucide-react'
+import { ArrowDownRight, ArrowUpRight, Ban, Boxes, CircleCheck, CircleX, Factory, History as HistoryIcon, LoaderCircle, Moon, Play, Rocket, Search, Sun, Workflow } from 'lucide-react'
 import { CommandDialog, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList, CommandShortcut } from '@/components/ui/command'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { cn } from '@/lib/utils'
@@ -90,7 +90,7 @@ function NavItem({ href, active, icon: Icon, label, keys }: { href: string; acti
 }
 
 export function Sidebar(props: {
-  view: 'line' | 'history' | 'floor' | 'product'
+  view: 'line' | 'history' | 'floor' | 'product' | 'deploy'
   product?: string
   runId: string | null
   runs: Summary[]
@@ -135,6 +135,7 @@ export function Sidebar(props: {
         <NavItem href="#/floor" active={view === 'floor'} icon={Factory} label="Floor" keys="G F" />
         <NavItem href={runId ? `#/run/${runId}` : '#/'} active={view === 'line'} icon={Workflow} label="Line" keys="G L" />
         <NavItem href="#/history" active={view === 'history'} icon={HistoryIcon} label="History" keys="G H" />
+        <NavItem href="#/deploy" active={view === 'deploy'} icon={Rocket} label="Deployments" keys="G D" />
       </nav>
       <div className="mt-5 flex items-center px-5 pb-1 text-[11.5px] font-medium text-muted-foreground">Products</div>
       <ul className="space-y-px px-3">
@@ -277,6 +278,13 @@ export function CommandMenu(props: {
             <CommandShortcut>
               <Kbd>G</Kbd>
               <Kbd>H</Kbd>
+            </CommandShortcut>
+          </CommandItem>
+          <CommandItem onSelect={go(() => (location.hash = '#/deploy'))}>
+            <Rocket /> Go to deployments
+            <CommandShortcut>
+              <Kbd>G</Kbd>
+              <Kbd>D</Kbd>
             </CommandShortcut>
           </CommandItem>
           <CommandItem onSelect={go(onToggleSpec)}>

@@ -31,6 +31,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/tillknuesting/fliessband/internal/deploy"
 	"github.com/tillknuesting/fliessband/internal/gen"
 	"github.com/tillknuesting/fliessband/internal/pipeline"
 	"github.com/tillknuesting/fliessband/internal/spec"
@@ -48,7 +49,9 @@ type Config struct {
 	LoopbackOnly bool
 	// TrustedOrigins may make cross-origin writes, e.g. behind a proxy.
 	TrustedOrigins []string
-	Log            *slog.Logger
+	// Deployer ships passed runs to Kubernetes; nil turns deployment off.
+	Deployer *deploy.Deployer
+	Log      *slog.Logger
 }
 
 type api struct {
@@ -102,6 +105,10 @@ func New(m *pipeline.Manager, cfg Config) (http.Handler, error) {
 	mux.HandleFunc("GET /api/runs/{id}/zip", a.auth(a.zip))
 	mux.HandleFunc("GET /api/runs/{id}/sbom", a.auth(a.artifact("sbom.cdx.json", "application/vnd.cyclonedx+json")))
 	mux.HandleFunc("GET /api/runs/{id}/provenance", a.auth(a.artifact("provenance.intoto.json", "application/vnd.in-toto+json")))
+	mux.HandleFunc("POST /api/runs/{id}/deploy", a.auth(a.deployRun))
+	mux.HandleFunc("GET /api/deploy", a.auth(a.deployState))
+	mux.HandleFunc("GET /api/deployments/{id}", a.auth(a.deployment))
+	mux.HandleFunc("POST /api/deploy/{target}/{service}/remove", a.auth(a.removeService))
 
 	csrf := http.NewCrossOriginProtection()
 	for _, o := range cfg.TrustedOrigins {
