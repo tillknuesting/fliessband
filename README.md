@@ -229,6 +229,11 @@ scaled, and any failed gate caps the score at 40.
 | Compatibility | 10 | no breaking change against the last passing contract |
 | Maintainability | 5 | mean Maintainability Index |
 
+Mutant results are cached by the exact contents of each package and
+everything its tests link (`FLIESSBAND_CACHE` sets where), so a rerun only
+tests mutants whose code changed: an unchanged rerun of inventory spends
+under 2 s on mutation testing instead of about 40 s.
+
 Mutation score outweighs coverage on purpose: coverage only says which code
 ran, while mutation testing checks that the tests would notice if it were
 wrong.
@@ -259,6 +264,11 @@ make serve
 `OPENAI_BASE_URL` and `OPENAI_API_KEY` work too. Child processes never see
 these variables.
 
+Each answer is capped at 16,000 tokens (`FLIESSBAND_LLM_MAX_TOKENS` changes
+it), and an answer cut off at the cap is reported as such rather than as a
+compile error. The reviewer gets a tighter cap and, on OpenRouter, a low
+reasoning effort.
+
 ## Several models: tournament and review
 
 Models from different vendors make different mistakes. With a router such as
@@ -281,8 +291,10 @@ parallel. Then every implementation runs against:
   dual execution agreement
 - its own tests (15%)
 
-The best-supported implementation goes down the line; the others are
-recorded. A model whose own tests are too weak to catch its own bug is caught
+The line doesn't wait for a straggler: once the first model answers, the
+others get three times as long (at least a minute) and are cut off after
+that. The best-supported implementation goes down the line; the others are
+recorded. Test hardening goes to the quickest model whose code ran. A model whose own tests are too weak to catch its own bug is caught
 by its rivals' tests. Holdout examples run but never count towards the
 choice, so they still judge the winner fairly. Repairs and test hardening go
 to the winning model.

@@ -333,7 +333,20 @@ type Runner struct {
 	// "go"), e.g. to run it in a sandbox; Env and Prepare are then unused.
 	Command func(ctx context.Context, dir string, args []string) *exec.Cmd
 	TempDir string // where mutant sources and overlays are written; default os.TempDir
+	// Cache, when set, answers mutants whose code and tests are unchanged
+	// since an earlier run, so they are not compiled and tested again.
+	Cache Cache
 }
+
+// Cache remembers mutant outcomes. Get reports a stored status; Put stores
+// one. Implementations key on everything the outcome depends on.
+type Cache interface {
+	Get(m Mutant) (Status, bool)
+	Put(m Mutant, s Status)
+}
+
+// cacheable reports whether a status is a stable outcome worth storing.
+func cacheable(s Status) bool { return s == Killed || s == Survived || s == TimedOut || s == Invalid }
 
 // command builds one go command.
 func (r *Runner) command(ctx context.Context, args []string) *exec.Cmd {
@@ -391,6 +404,9 @@ func (r *Runner) Run(ctx context.Context, ms []Mutant) ([]Mutant, error) {
 		wg.Go(func() {
 			for i := range jobs {
 				r.runOne(ctx, tmp, &ms[i], sources[ms[i].File])
+				if r.Cache != nil && cacheable(ms[i].Status) {
+					r.Cache.Put(ms[i], ms[i].Status)
+				}
 				mu.Lock()
 				done++
 				if r.Progress != nil {
@@ -406,6 +422,14 @@ func (r *Runner) Run(ctx context.Context, ms []Mutant) ([]Mutant, error) {
 			ms[i].Status = NotCovered
 		case ctx.Err() != nil || (r.Budget > 0 && time.Now().After(deadline)):
 			ms[i].Status = Skipped
+		case r.Cache != nil && r.cached(&ms[i]):
+			mu.Lock()
+			done++
+			if r.Progress != nil {
+				r.Progress(done, len(ms), ms[i])
+			}
+			mu.Unlock()
+			continue
 		default:
 			jobs <- i
 			continue
@@ -417,6 +441,14 @@ func (r *Runner) Run(ctx context.Context, ms []Mutant) ([]Mutant, error) {
 	close(jobs)
 	wg.Wait()
 	return ms, ctx.Err()
+}
+
+func (r *Runner) cached(m *Mutant) bool {
+	st, ok := r.Cache.Get(*m)
+	if ok {
+		m.Status = st
+	}
+	return ok
 }
 
 func (r *Runner) runOne(ctx context.Context, tmp string, m *Mutant, src []byte) {

@@ -13,6 +13,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/tillknuesting/fliessband/internal/gen"
@@ -48,6 +49,17 @@ type candidate struct {
 	crossRuns map[string]map[string]bool
 }
 
+// Straggler limits: after the first answer, the tournament waits until
+// stragglerFactor times that long (at least stragglerMin) for the rest.
+var (
+	stragglerMin    = 60 * time.Second
+	stragglerFactor = 3
+)
+
+func straggler(first time.Duration) time.Duration {
+	return max(stragglerMin, time.Duration(stragglerFactor)*first)
+}
+
 func (x *executor) tournament(ctx context.Context, st *StageState, models []string, in llm.Context) error {
 	n := len(x.spec.Methods)
 	// The module cache must hold every dependency before candidates
@@ -62,22 +74,54 @@ func (x *executor) tournament(ctx context.Context, st *StageState, models []stri
 	cands := make([]*candidate, len(models))
 	var wg sync.WaitGroup
 	var mu sync.Mutex
+	// The line does not wait for a straggler: once the first model has
+	// answered, the others get until the deadline (see straggler) and are
+	// cut off after it.
+	callCtx, cutOff := context.WithCancel(ctx)
+	defer cutOff()
+	begin := time.Now()
+	answered := make(chan time.Duration, len(models))
+	var cut atomic.Bool
+	var deadline time.Duration
+	go func() {
+		select {
+		case first := <-answered:
+			deadline = straggler(first)
+			t := time.NewTimer(deadline - time.Since(begin))
+			defer t.Stop()
+			select {
+			case <-t.C:
+				cut.Store(true)
+				cutOff()
+			case <-callCtx.Done():
+			}
+		case <-callCtx.Done():
+		}
+	}()
+	pending := sync.WaitGroup{}
+	pending.Add(len(models))
+	go func() { pending.Wait(); cutOff() }() // every call returned: stop the timer
 	for i, model := range models {
 		cands[i] = &candidate{model: model}
 		wg.Go(func() {
+			defer pending.Done()
 			c := cands[i]
 			start := time.Now()
-			res, err := x.m.llm.Implement(ctx, model, in)
+			res, err := x.m.llm.Implement(callCtx, model, in)
 			c.ms = float64(time.Since(start).Milliseconds())
+			if err != nil && cut.Load() && ctx.Err() == nil {
+				err = fmt.Errorf("no answer within %.0f s, when the others had answered; cut off so the line does not wait", deadline.Seconds())
+			}
 			c.files, c.usage, c.sha, c.err = res.Files, res.Usage, res.PromptSHA, err
 			mu.Lock()
 			x.record(st, "implement", model, res)
 			mu.Unlock()
 			if err != nil {
-				x.log(st, fmt.Sprintf("%s: call failed: %v", model, err))
-			} else {
-				x.log(st, fmt.Sprintf("%s: answered in %.1f s, %d tokens in, %d out", model, c.ms/1000, res.Usage.PromptTokens, res.Usage.CompletionTokens))
+				x.log(st, fmt.Sprintf("%s: %v", model, err))
+				return
 			}
+			answered <- time.Since(begin)
+			x.log(st, fmt.Sprintf("%s: answered in %.1f s, %d tokens in, %d out", model, c.ms/1000, res.Usage.PromptTokens, res.Usage.CompletionTokens))
 		})
 	}
 	wg.Wait()

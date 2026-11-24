@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/tillknuesting/fliessband/internal/gen"
@@ -112,9 +113,20 @@ func (x *executor) stageMutation(ctx context.Context, st *StageState) error {
 	runner.Timeout = min(max(3*base, 10*time.Second), time.Minute)
 	x.log(st, fmt.Sprintf("%d mutants in %d files (%d found%s); tests take %.1fs without mutants; %d workers, %s per mutant",
 		len(ms), len(x.mutationFiles()), len(all), map[bool]string{true: ", sampled"}[sampled], base.Seconds(), runner.Workers, runner.Timeout))
+	cache := x.newMutantCache(ctx, ms, runner.Args, runner.Timeout)
+	if cache != nil {
+		runner.Cache = cache
+	}
 	if ms, err = runner.Run(ctx, ms); err != nil {
 		return err
 	}
+	if cache != nil {
+		cache.flush()
+		if cache.hits > 0 {
+			x.log(st, fmt.Sprintf("%d of %d mutants answered from the cache: their package and its dependencies are unchanged since an earlier run", cache.hits, len(ms)))
+		}
+	}
+	runner.Cache = nil // hardening changes the tests, so its reruns are never cached
 	x.harden(ctx, st, ms, runner)
 	rep := x.mutationReport(ms, sampled, time.Since(start))
 	x.rep.Mutation = rep
@@ -222,14 +234,15 @@ func (x *executor) harden(ctx context.Context, st *StageState, ms []mutate.Mutan
 	}
 	h := &metrics.Hardening{Survivors: len(idx)}
 	x.rep.Factory.Hardening = h
-	x.log(st, fmt.Sprintf("asking %s for tests that kill %s in its code", x.llmModel(), fmtCount(len(idx), "surviving mutant", "surviving mutants")))
+	model := x.hardenModel()
+	x.log(st, fmt.Sprintf("asking %s for tests that kill %s in the code", model, fmtCount(len(idx), "surviving mutant", "surviving mutants")))
 	in, err := x.llmContext()
 	if err != nil {
 		h.Note = err.Error()
 		return
 	}
-	res, err := x.m.llm.Harden(ctx, x.llmModel(), in, testFile, desc.String())
-	x.record(st, "harden", x.llmModel(), res)
+	res, err := x.m.llm.Harden(ctx, model, in, testFile, desc.String())
+	x.record(st, "harden", model, res)
 	for _, id := range res.Equivalent {
 		for _, i := range idx {
 			if ms[i].ID == id {
@@ -321,9 +334,28 @@ func (x *executor) stageFuzz(ctx context.Context, st *StageState) error {
 	fz := &metrics.Fuzz{}
 	x.rep.Fuzz = fz
 	var findings []metrics.Finding
-	for _, t := range targets {
-		res, err := x.command(ctx, st, cmdOpts{quiet: true, timeout: 3 * time.Minute}, "go", "test", "-run", "^$",
-			"-fuzz", "^"+t+"$", "-fuzztime", fuzztime, "-parallel", "4", "./internal/service")
+	// Targets fuzz at the same time, a few at once: each is a separate go
+	// test process with its own corpus directory, and one target alone
+	// leaves most cores idle.
+	type outcome struct {
+		res cmdResult
+		err error
+	}
+	outs := make([]outcome, len(targets))
+	sem := make(chan struct{}, min(len(targets), max(1, runtime.NumCPU()/4)))
+	var wg sync.WaitGroup
+	for i, t := range targets {
+		wg.Go(func() {
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			res, err := x.command(ctx, st, cmdOpts{quiet: true, timeout: 3 * time.Minute}, "go", "test", "-run", "^$",
+				"-fuzz", "^"+t+"$", "-fuzztime", fuzztime, "-parallel", "4", "./internal/service")
+			outs[i] = outcome{res, err}
+		})
+	}
+	wg.Wait()
+	for i, t := range targets {
+		res, err := outs[i].res, outs[i].err
 		if err != nil {
 			return err
 		}
@@ -464,4 +496,22 @@ func (x *executor) stageSBOM(_ context.Context, st *StageState) error {
 	x.log(st, fmt.Sprintf("binary sha256 %s, built with %s", b.SHA256, b.GoVersion))
 	x.summary(st, "SBOM lists %d components; provenance covers the binary and %d source files (unsigned)", sup.Components, len(x.man.Files))
 	return nil
+}
+
+// hardenModel picks who writes tests against surviving mutants. Writing a
+// test needs no authorship of the code, so after a tournament it is the
+// quickest model whose implementation compiled and ran, not necessarily the
+// winner: a slow winner would otherwise hold the line up a second time.
+func (x *executor) hardenModel() string {
+	t := x.rep.Factory.Tournament
+	if t == nil {
+		return x.llmModel()
+	}
+	best, ms := x.llmModel(), -1.0
+	for _, c := range t.Candidates {
+		if c.Status == "ran" && (ms < 0 || c.Ms < ms) {
+			best, ms = c.Model, c.Ms
+		}
+	}
+	return best
 }

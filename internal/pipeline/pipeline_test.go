@@ -470,6 +470,13 @@ func TestTournament(t *testing.T) {
 			content = block("internal/service/custom.go", buggyCustom) + block("internal/service/custom_test.go", happyTest)
 		case "vendor/broken":
 			content = block("internal/service/custom.go", brokenCustom) + block("internal/service/custom_test.go", customTest)
+		case "vendor/slow":
+			// A straggler: it never answers before the tournament's deadline.
+			select {
+			case <-r.Context().Done():
+			case <-time.After(time.Minute):
+			}
+			return
 		case "vendor/reviewer":
 			content = "```json\n[{\"file\": \"internal/service/custom.go\", \"line\": 18, \"severity\": \"risk\", \"message\": \"UpdateTime uses the server clock.\"}," +
 				"{\"file\": \"internal/service/service.go\", \"line\": 1, \"severity\": \"bug\", \"message\": \"not under review, must be dropped\"}]\n```"
@@ -493,7 +500,10 @@ func TestTournament(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	r, err := m.Start(src, Options{LLM: true, Models: []string{"vendor/buggy", "vendor/broken", "vendor/good"}, Reviewer: "vendor/reviewer"})
+	oldMin, oldFactor := stragglerMin, stragglerFactor
+	stragglerMin, stragglerFactor = 2*time.Second, 1
+	defer func() { stragglerMin, stragglerFactor = oldMin, oldFactor }()
+	r, err := m.Start(src, Options{LLM: true, Models: []string{"vendor/buggy", "vendor/broken", "vendor/good", "vendor/slow"}, Reviewer: "vendor/reviewer"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -518,6 +528,12 @@ func TestTournament(t *testing.T) {
 		byModel[c.Model] = c
 		t.Logf("%-14s %-8s own %s visible %s foreign %s score %.2f", c.Model, c.Status, c.Own, c.Visible, c.Foreign, c.Score)
 	}
+	if c := byModel["vendor/slow"]; c.Status != "no answer" || !strings.Contains(c.Note, "cut off") {
+		t.Errorf("slow candidate = %s (%s), want it cut off after the deadline", c.Status, c.Note)
+	}
+	if c := byModel["vendor/slow"]; c.Ms > 20_000 {
+		t.Errorf("the line waited %.0f ms for the straggler", c.Ms)
+	}
 	if c := byModel["vendor/broken"]; c.Status != "compile" {
 		t.Errorf("broken candidate = %+v, want a compile failure", c)
 	}
@@ -531,7 +547,7 @@ func TestTournament(t *testing.T) {
 	if rev == nil || rev.Model != "vendor/reviewer" || len(rev.Findings) != 1 || rev.Findings[0].Severity != "risk" {
 		t.Errorf("review = %+v, want one risk on custom.go", rev)
 	}
-	if calls["vendor/reviewer"] != 1 || fx.LLMCalls != 4 || fx.CostUSD < 0.0079 {
+	if calls["vendor/reviewer"] != 1 || fx.LLMCalls != 5 || fx.CostUSD < 0.0079 { // 4 models, one cut off, and the reviewer
 		t.Errorf("calls %v, LLMCalls %d, cost %.4f; want one call per model and $0.008", calls, fx.LLMCalls, fx.CostUSD)
 	}
 	b, _ := os.ReadFile(filepath.Join(r.ServiceDir(), "internal/service/custom.go"))

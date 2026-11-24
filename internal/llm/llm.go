@@ -6,6 +6,7 @@ package llm
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -33,6 +34,29 @@ type Client struct {
 	// review station off.
 	Reviewer string
 	HTTP     *http.Client
+	// MaxTokens caps each answer, so one verbose model cannot hold up the
+	// line; 0 means DefaultMaxTokens.
+	MaxTokens int
+}
+
+// DefaultMaxTokens is enough for both owned files with room to spare: the
+// longest complete answers seen so far are about 10,000 tokens.
+const DefaultMaxTokens = 16000
+
+// reviewMaxTokens caps the reviewer, whose answer is a short JSON list.
+const reviewMaxTokens = 6000
+
+// callOpts tune one request; they travel in the context so every prompt
+// builder keeps its signature.
+type callOpts struct {
+	maxTokens int
+	effort    string // reasoning effort where the provider supports it: low, medium, high
+}
+
+type optsKey struct{}
+
+func withOpts(ctx context.Context, o callOpts) context.Context {
+	return context.WithValue(ctx, optsKey{}, o)
 }
 
 // Candidates returns the models that compete to implement the service.
@@ -78,13 +102,22 @@ func FromEnv() *Client {
 		model = models[0]
 	}
 	return &Client{
-		BaseURL:  base,
-		APIKey:   key,
-		Model:    first(model, defaultModel(base)),
-		Models:   models,
-		Reviewer: strings.TrimSpace(os.Getenv("FLIESSBAND_LLM_REVIEWER")),
-		HTTP:     &http.Client{Timeout: 6 * time.Minute},
+		BaseURL:   base,
+		APIKey:    key,
+		Model:     first(model, defaultModel(base)),
+		Models:    models,
+		Reviewer:  strings.TrimSpace(os.Getenv("FLIESSBAND_LLM_REVIEWER")),
+		HTTP:      &http.Client{Timeout: 6 * time.Minute},
+		MaxTokens: atoi(os.Getenv("FLIESSBAND_LLM_MAX_TOKENS")),
 	}
+}
+
+func atoi(s string) int {
+	n, err := strconv.Atoi(strings.TrimSpace(s))
+	if err != nil || n < 0 {
+		return 0
+	}
+	return n
 }
 
 func defaultModel(base string) string {
@@ -169,8 +202,23 @@ func (e transientError) Unwrap() error { return e.error }
 
 func (c *Client) chatOnce(ctx context.Context, model string, msgs []Message) (string, Usage, error) {
 	payload := map[string]any{"model": model, "messages": msgs}
+	o, _ := ctx.Value(optsKey{}).(callOpts)
+	limit := o.maxTokens
+	if limit == 0 {
+		limit = cmp.Or(c.MaxTokens, DefaultMaxTokens)
+	}
+	// OpenAI's own API wants max_completion_tokens for its newer models;
+	// everyone else, OpenRouter included, takes max_tokens.
+	if strings.Contains(c.BaseURL, "api.openai.com") {
+		payload["max_completion_tokens"] = limit
+	} else {
+		payload["max_tokens"] = limit
+	}
 	if c.isOpenRouter() {
 		payload["usage"] = map[string]bool{"include": true} // report the cost of each call
+		if o.effort != "" {
+			payload["reasoning"] = map[string]string{"effort": o.effort}
+		}
 	}
 	body, _ := json.Marshal(payload)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.BaseURL+"/chat/completions", bytes.NewReader(body))
@@ -204,7 +252,8 @@ func (c *Client) chatOnce(ctx context.Context, model string, msgs []Message) (st
 	}
 	var out struct {
 		Choices []struct {
-			Message Message `json:"message"`
+			Message      Message `json:"message"`
+			FinishReason string  `json:"finish_reason"`
 		} `json:"choices"`
 		Usage usageJSON `json:"usage"`
 	}
@@ -215,6 +264,11 @@ func (c *Client) chatOnce(ctx context.Context, model string, msgs []Message) (st
 	u.CachedTokens = max(out.Usage.Details.CachedTokens, out.Usage.CacheHit)
 	if len(out.Choices) == 0 {
 		return "", u, transientError{errors.New("LLM returned no choices")}
+	}
+	if out.Choices[0].FinishReason == "length" {
+		// A cut-off answer has incomplete files; say so instead of letting a
+		// half-written file fail later as a compile error.
+		return "", u, fmt.Errorf("the answer reached the %d-token limit and was cut off (set FLIESSBAND_LLM_MAX_TOKENS to allow more)", limit)
 	}
 	return out.Choices[0].Message.Content, u, nil
 }
@@ -439,6 +493,9 @@ func (c *Client) Review(ctx context.Context, model string, in Context) ([]Review
 	b.WriteString(in.MethodBrief)
 	sum := sha256.Sum256([]byte(reviewSystem + "\n" + b.String()))
 	res := Result{PromptSHA: hex.EncodeToString(sum[:])}
+	// The reviewer answers with a short JSON list: a lower reasoning effort
+	// and a tight cap keep the station quick and cheap.
+	ctx = withOpts(ctx, callOpts{maxTokens: reviewMaxTokens, effort: "low"})
 	reply, usage, err := c.Chat(ctx, model, []Message{{Role: "system", Content: reviewSystem}, {Role: "user", Content: b.String()}})
 	res.Usage = usage
 	if err != nil {
