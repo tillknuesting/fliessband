@@ -20,7 +20,11 @@
 </p>
 
 <p align="center">
-  <img src="docs/demo.gif" width="900" alt="Fliessband running a spec through its 21 stations, then showing the score, measurements, generated code and run history">
+  <img src="docs/demo.gif" width="900" alt="Fliessband: dispatching work orders on the factory floor, a live line of 22 stations, the service blueprint, a three-model tournament, the security audit and two versions of a product compared">
+</p>
+
+<p align="center">
+  <sub>Dispatch work orders on the floor · watch the line run · explore the service blueprint · see which model won the tournament and why · audit security with file:line evidence · compare product versions down to the code. <a href="docs/demo.mp4">Watch as video</a>.</sub>
 </p>
 
 *Fließband* (FLEES-bahnt) is German for assembly line.
